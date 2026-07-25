@@ -1,4 +1,4 @@
-"""Desktop client for an Ollama agent using tools from a Zapier MCP server."""
+"""Desktop client for an LM Studio agent using tools from the FRED API."""
 
 import asyncio
 import importlib.util
@@ -11,12 +11,12 @@ from typing import Any, Dict
 
 
 REQUIRED_PACKAGES = {
-    "ollama": "ollama",
-    "ollmcp": "ollmcp",
-    "mcp": "mcp",
+    "openai": "openai",
+    "pydantic": "pydantic",
+    "requests": "requests",
 }
-OLLAMA_MODEL = "qwen3.5:35b"
-OLLAMA_HOST = "http://localhost:11434"
+LM_STUDIO_MODEL = "qwen3.6-27b"
+LM_STUDIO_HOST = "http://localhost:1234"
 
 
 def ensure_packages() -> None:
@@ -35,106 +35,15 @@ ensure_packages()
 import tkinter as tk
 from tkinter import scrolledtext, ttk
 
-from ollama import Client
-from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from openai import OpenAI
+from LocalFREDAgent import LocalFREDAgent
 
 
-class MCPAgent:
-    def __init__(self, mcp_url: str, activity_callback=None):
-        self.mcp_url = mcp_url
-        self.activity_callback = activity_callback or (lambda _: None)
-        self.client = Client(host=OLLAMA_HOST)
-        self.tool_map: Dict[str, Any] = {}
-        self.ollama_tools = []
-        self.http_ctx = None
-        self.session = None
-
-    async def connect(self) -> None:
-        self.activity_callback("Connecting to Zapier MCP server...")
-        self.http_ctx = streamablehttp_client(self.mcp_url)
-        read_stream, write_stream, _ = await self.http_ctx.__aenter__()
-        self.session = ClientSession(read_stream, write_stream)
-        await self.session.initialize()
-
-        tools_response = await self.session.list_tools()
-        for tool in tools_response.tools:
-            self.tool_map[tool.name] = tool
-            self.ollama_tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description or "",
-                        "parameters": tool.inputSchema,
-                    },
-                }
-            )
-
-        tool_names = ", ".join(self.tool_map) or "no tools"
-        self.activity_callback(f"Connected. Available Zapier tools: {tool_names}")
-
-    async def close(self) -> None:
-        if self.http_ctx is not None:
-            await self.http_ctx.__aexit__(None, None, None)
-            self.http_ctx = None
-
-    async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
-        if self.session is None:
-            raise RuntimeError("MCP session is not connected.")
-        return await self.session.call_tool(name, arguments)
-
-    async def run(self, conversation: list[Dict[str, str]]) -> str:
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful Zapier automation assistant. You can use the "
-                    "available Zapier MCP tools to inspect and perform actions in the "
-                    "user's connected apps. Use a tool whenever it is necessary, explain "
-                    "important results clearly, and ask for clarification before making "
-                    "an irreversible external change."
-                ),
-            },
-            *conversation,
-        ]
-
-        while True:
-            response = self.client.chat(
-                model=OLLAMA_MODEL, messages=messages, tools=self.ollama_tools
-            )
-            assistant_message = response["message"]
-            tool_calls = assistant_message.get("tool_calls", [])
-            if not tool_calls:
-                return assistant_message.get("content", "")
-
-            messages.append(assistant_message)
-            for call in tool_calls:
-                function = call["function"]
-                tool_name = function["name"]
-                arguments = function.get("arguments", {})
-                self.activity_callback(f"Calling Zapier tool: {tool_name}")
-                try:
-                    tool_result = await self.call_tool(tool_name, arguments)
-                    content = json.dumps(
-                        tool_result.model_dump()
-                        if hasattr(tool_result, "model_dump")
-                        else str(tool_result),
-                        default=str,
-                    )
-                except Exception as error:
-                    content = json.dumps({"error": str(error)})
-
-                messages.append(
-                    {"role": "tool", "tool_name": tool_name, "content": content}
-                )
-
-
-class ZapierAgentApp(tk.Tk):
-    def __init__(self, mcp_url: str):
+class FredAgentApp(tk.Tk):
+    def __init__(self, api_key: str):
         super().__init__()
-        self.mcp_url = mcp_url
-        self.title("Zapier Discussion")
+        self.api_key = api_key
+        self.title("FRED Economic Data Agent")
         self.minsize(760, 560)
         self.geometry("900x680")
         self.conversation: list[Dict[str, str]] = []
@@ -231,12 +140,12 @@ class ZapierAgentApp(tk.Tk):
 
     def _run_agent(self, conversation: list[Dict[str, str]]) -> None:
         async def execute() -> str:
-            agent = MCPAgent(self.mcp_url)
+            # Initialize the LocalFREDAgent directly with FRED API key
+            agent = LocalFREDAgent(api_key=self.api_key)
             try:
-                await agent.connect()
                 return await agent.run(conversation)
             finally:
-                await agent.close()
+                pass  # No close method needed for this implementation
 
         try:
             answer = asyncio.run(execute())
@@ -259,44 +168,20 @@ class ZapierAgentApp(tk.Tk):
         self._append("Agent", answer)
 
 
-def _run_ollmcp_login(mcp_url: str) -> None:
-    print("\nOpening OllMCP for Zapier sign-in. Complete any browser login, then exit OllMCP to continue.")
-    ollmcp_executable = Path(sys.executable).with_name("ollmcp.exe")
-    try:
-        subprocess.run(
-            [str(ollmcp_executable), "--mcp-server-url", mcp_url, "--model", OLLAMA_MODEL],
-            check=False,
-        )
-    except FileNotFoundError as error:
-        raise RuntimeError("OllMCP is not installed or is unavailable on PATH.") from error
-
-
-def _connect_before_launch(mcp_url: str) -> None:
-    async def verify() -> None:
-        agent = MCPAgent(mcp_url)
-        try:
-            await agent.connect()
-        finally:
-            await agent.close()
-
-    asyncio.run(verify())
-
-
 def bootstrap() -> str:
-    print("Zapier MCP setup")
-    mcp_url = input("Paste your Zapier MCP connection URL: ").strip()
-    if not mcp_url:
-        raise RuntimeError("A Zapier MCP connection URL is required.")
-    _run_ollmcp_login(mcp_url)
-    print("\nVerifying the Zapier MCP connection...")
-    _connect_before_launch(mcp_url)
-    print("Connected. Opening the Zapier discussion window.")
-    return mcp_url
+    print("FRED Agent setup")
+    api_key = input("Enter your FRED API key: ").strip()
+    if not api_key:
+        raise RuntimeError("A FRED API key is required.")
+    print("\nStarting FRED Economic Data Agent...")
+    return api_key
 
 
 if __name__ == "__main__":
     try:
-        ZapierAgentApp(bootstrap()).mainloop()
+        FredAgentApp(bootstrap()).mainloop()
+    except KeyboardInterrupt:
+        print("\nFRED agent stopped.")
     except Exception as error:
-        print(f"Unable to connect to Zapier MCP: {error}", file=sys.stderr)
+        print(f"Unable to start FRED agent: {error}", file=sys.stderr)
         sys.exit(1)
