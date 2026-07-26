@@ -4,12 +4,14 @@ import asyncio
 import json
 import os
 import requests
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, cast
 from openai import OpenAI
 
 # FRED API Configuration
 FRED_API_BASE_URL = "https://api.stlouisfed.org/fred"
 FRED_API_KEY = os.getenv("FRED_API_KEY", "")  # Get from environment variable
+TWELVE_DATA_API_BASE_URL = "https://api.twelvedata.com"
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 MODEL_CONTEXT_TOKENS = 8_192
 MAX_COMPLETION_TOKENS = 3_072
 REQUEST_TOKEN_BUDGET = 4_800
@@ -20,11 +22,22 @@ class FredAPIError(Exception):
     """Custom exception for FRED API errors."""
     pass
 
+class TwelveDataAPIError(Exception):
+    """Custom exception for Twelve Data API errors."""
+    pass
+
 class LocalFREDAgent:
     """Local FRED Agent that can query economic data using the FRED API."""
     
-    def __init__(self, api_key: str = None, activity_callback=None, chart_callback=None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        twelve_data_api_key: Optional[str] = None,
+        activity_callback=None,
+        chart_callback=None,
+    ):
         self.api_key = api_key or FRED_API_KEY
+        self.twelve_data_api_key = twelve_data_api_key or TWELVE_DATA_API_KEY
         self.activity_callback = activity_callback or (lambda _: None)
         self.chart_callback = chart_callback or (lambda _series_id, _observations: None)
         self.client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
@@ -41,6 +54,9 @@ class LocalFREDAgent:
             "search_fred_series": self.search_fred_series,
             "get_fred_series_data": self.get_fred_series_data,
             "get_fred_series_info": self.get_fred_series_info,
+            "search_market_symbols": self.search_market_symbols,
+            "get_market_quote": self.get_market_quote,
+            "get_market_time_series": self.get_market_time_series,
         }
         
         # Create OpenAI-compatible tool definitions
@@ -111,6 +127,69 @@ class LocalFREDAgent:
                         "required": ["series_id"]
                     },
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_market_symbols",
+                    "description": "Search Twelve Data symbols for stocks, ETFs, mutual funds, indices, forex, or crypto.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Company name, fund name, or market symbol to search for"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum number of matches to return, from 1 to 10"
+                            }
+                        },
+                        "required": ["query"]
+                    },
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_market_quote",
+                    "description": "Get the latest available Twelve Data market quote for a symbol such as AAPL, SPY, EUR/USD, or BTC/USD.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {
+                                "type": "string",
+                                "description": "Twelve Data symbol, such as AAPL, SPY, EUR/USD, or BTC/USD"
+                            }
+                        },
+                        "required": ["symbol"]
+                    },
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_market_time_series",
+                    "description": "Get historical daily prices from Twelve Data for a stock, ETF, mutual fund, index, forex pair, or crypto asset. Use this when a chart, trend, or comparison is needed.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {
+                                "type": "string",
+                                "description": "Twelve Data symbol, such as AAPL, SPY, EUR/USD, or BTC/USD"
+                            },
+                            "interval": {
+                                "type": "string",
+                                "description": "Time interval; use 1day unless the request needs another interval"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum observations to return, from 2 to 60"
+                            }
+                        },
+                        "required": ["symbol"]
+                    },
+                }
             }
         ]
     
@@ -125,6 +204,74 @@ class LocalFREDAgent:
             return response.json()
         except requests.exceptions.RequestException as e:
             raise FredAPIError(f"Error querying FRED API: {str(e)}")
+
+    def _make_twelve_data_request(self, endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Make an authenticated request to Twelve Data and surface API errors clearly."""
+        if not self.twelve_data_api_key:
+            raise TwelveDataAPIError(
+                "A Twelve Data API key is required. Set TWELVE_DATA_API_KEY or enter it at startup."
+            )
+        params["apikey"] = self.twelve_data_api_key
+        try:
+            response = requests.get(
+                f"{TWELVE_DATA_API_BASE_URL}/{endpoint}", params=params, timeout=20
+            )
+            response.raise_for_status()
+            data = response.json()
+        except requests.exceptions.RequestException as error:
+            raise TwelveDataAPIError(f"Error querying Twelve Data API: {error}") from error
+        if data.get("status") == "error" or data.get("code"):
+            raise TwelveDataAPIError(data.get("message", "Twelve Data returned an API error."))
+        return data
+
+    async def search_market_symbols(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Search Twelve Data's market symbol catalog."""
+        self.activity_callback(f"Searching market symbols: {query}")
+        data = self._make_twelve_data_request(
+            "symbol_search", {"symbol": query, "outputsize": max(1, min(int(limit), 10))}
+        )
+        return [
+            {
+                field: item.get(field)
+                for field in ("symbol", "instrument_name", "exchange", "mic_code", "type", "currency")
+                if item.get(field) is not None
+            }
+            for item in data.get("data", [])
+        ]
+
+    async def get_market_quote(self, symbol: str) -> Dict[str, Any]:
+        """Get the latest market quote from Twelve Data."""
+        self.activity_callback(f"Getting market quote: {symbol}")
+        data = self._make_twelve_data_request("quote", {"symbol": symbol.upper()})
+        fields = (
+            "symbol", "name", "exchange", "currency", "datetime", "close", "previous_close",
+            "change", "percent_change", "open", "high", "low", "volume", "is_market_open",
+        )
+        return {field: data.get(field) for field in fields if data.get(field) is not None}
+
+    async def get_market_time_series(
+        self,
+        symbol: str,
+        interval: str = "1day",
+        limit: int = 12,
+    ) -> List[Dict[str, Any]]:
+        """Get normalized market observations and send them to the chart callback."""
+        self.activity_callback(f"Getting market time series: {symbol}")
+        data = self._make_twelve_data_request(
+            "time_series",
+            {
+                "symbol": symbol.upper(),
+                "interval": interval,
+                "outputsize": max(2, min(int(limit), 60)),
+            },
+        )
+        observations = [
+            {"date": item.get("datetime", "")[:10], "value": item.get("close")}
+            for item in data.get("values", [])
+        ]
+        chart_id = f"Market: {data.get('meta', {}).get('symbol', symbol.upper())}"
+        self.chart_callback(chart_id, observations)
+        return observations
     
     async def search_fred_series(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Search for FRED economic series by keyword."""
@@ -159,8 +306,8 @@ class LocalFREDAgent:
     async def get_fred_series_data(
         self,
         series_id: str,
-        start_date: str = None,
-        end_date: str = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         limit: int = DEFAULT_OBSERVATION_LIMIT,
     ) -> List[Dict[str, Any]]:
         """Get time series data for a FRED economic series."""
@@ -244,7 +391,7 @@ class LocalFREDAgent:
         messages: List[Dict[str, Any]],
         max_tokens: int = REQUEST_TOKEN_BUDGET,
     ) -> List[Dict[str, Any]]:
-        """Keep one leading system prompt and recent complete conversation turns."""
+        """Keep a system prompt, the latest user request, and recent complete turns."""
         system_message = next(
             (message for message in messages if message.get("role") == "system"),
             None,
@@ -256,19 +403,52 @@ class LocalFREDAgent:
             message for message in messages if message.get("role") != "system"
         ]
         request_overhead = self._token_count(self.openai_tools) + 1_024
-        used_tokens = self._message_token_count(system_message) + request_overhead
-        kept_units: List[List[Dict[str, Any]]] = []
+        base_tokens = self._message_token_count(system_message) + request_overhead
+        latest_user_index = max(
+            (
+                index
+                for index, message in enumerate(non_system_messages)
+                if message.get("role") == "user"
+            ),
+            default=-1,
+        )
+        if latest_user_index < 0:
+            raise ValueError("A user message is required for the FRED agent request.")
 
-        for unit in reversed(self._conversation_units(non_system_messages)):
-            unit_tokens = sum(self._message_token_count(message) for message in unit)
-            if used_tokens + unit_tokens > max_tokens:
+        latest_user = non_system_messages[latest_user_index]
+        trailing_exchange = non_system_messages[latest_user_index + 1 :]
+        anchor = [latest_user, *trailing_exchange]
+        anchor_tokens = sum(self._message_token_count(message) for message in anchor)
+
+        # A tool-call exchange is only valid with its initiating user request. If the
+        # exchange cannot fit, keep the request and let the model issue fresh tool calls.
+        if base_tokens + anchor_tokens > max_tokens:
+            anchor = [latest_user]
+            anchor_tokens = self._message_token_count(latest_user)
+
+        used_tokens = base_tokens + anchor_tokens
+        previous_messages = non_system_messages[:latest_user_index]
+        prior_turns: List[List[Dict[str, Any]]] = []
+        current_turn: List[Dict[str, Any]] = []
+        for message in previous_messages:
+            if message.get("role") == "user" and current_turn:
+                prior_turns.append(current_turn)
+                current_turn = []
+            current_turn.append(message)
+        if current_turn:
+            prior_turns.append(current_turn)
+
+        kept_turns: List[List[Dict[str, Any]]] = []
+        for turn in reversed(prior_turns):
+            turn_tokens = sum(self._message_token_count(message) for message in turn)
+            if used_tokens + turn_tokens > max_tokens:
                 continue
-            kept_units.append(unit)
-            used_tokens += unit_tokens
+            kept_turns.append(turn)
+            used_tokens += turn_tokens
 
         return [system_message] + [
-            message for unit in reversed(kept_units) for message in unit
-        ]
+            message for turn in reversed(kept_turns) for message in turn
+        ] + anchor
 
     def _serialize_tool_result(self, result: Any) -> str:
         """Serialize a bounded tool result so one API response cannot fill context."""
@@ -290,8 +470,8 @@ class LocalFREDAgent:
         """Create a concise response compatible with LM Studio's Qwen template."""
         return self.client.chat.completions.create(
             model="qwen3.6-27b",
-            messages=messages,
-            tools=self.openai_tools,
+            messages=cast(Any, messages),
+            tools=cast(Any, self.openai_tools),
             max_tokens=MAX_COMPLETION_TOKENS,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
@@ -304,9 +484,13 @@ class LocalFREDAgent:
                 "role": "system",
                 "content": (
                     "You are a helpful economic data assistant. You can use the "
-                    "available FRED API tools to search for and retrieve economic "
-                    "data from the Federal Reserve Economic Database (FRED). "
-                    "Use a tool whenever it is necessary and explain important results clearly. "
+                    "available FRED and Twelve Data tools to retrieve economic and market data. "
+                    "Use FRED for macroeconomic indicators, economic releases, and historical "
+                    "US economic series. Use Twelve Data for stocks, ETFs, mutual funds, indices, "
+                    "forex, crypto, quotes, and market-price history. For an economic question that "
+                    "would be clearer with market context, you may use both sources, but do not "
+                    "fetch market data merely for decoration. Use a tool whenever it is necessary "
+                    "and identify the source and observation date for material claims. "
                     "For common US indicators, use UNRATE, CPIAUCSL, PCEPI, and GDPC1 directly "
                     "instead of searching. For a multi-indicator economic report, retrieve the "
                     "four relevant series in one bounded batch with limit 12, then write the "
@@ -314,8 +498,14 @@ class LocalFREDAgent:
                     "the data-release lag, and do not make additional searches unless a series "
                     "is unavailable. When a user requests a chart, graph, plot, or visualization, "
                     "retrieve the relevant series observations so the desktop application can "
-                    "render the chart. Format final answers with concise Markdown headings, "
-                    "bullet points, bold emphasis, and inline code where helpful."
+                    "render the chart. For multi-indicator reports, give a complete narrative "
+                    "with these Markdown sections: Executive summary, Latest readings, What the "
+                    "data suggests, Outlook, and Caveats. Explain the direction and significance "
+                    "of every retrieved series, distinguish level changes from inflation rates, "
+                    "and never return only headings or a chart label. Forecasts must include a "
+                    "range, assumptions, uncertainty, and the data-release lag. Format final "
+                    "answers with concise Markdown headings, bullet points, bold emphasis, and "
+                    "inline code where helpful."
                 ),
             },
             *conversation,
@@ -358,8 +548,8 @@ class LocalFREDAgent:
                         "id": tc.id,
                         "type": "function",
                         "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
+                            "name": cast(Any, tc).function.name,
+                            "arguments": cast(Any, tc).function.arguments,
                         },
                     }
                     for tc in tool_calls
@@ -367,8 +557,8 @@ class LocalFREDAgent:
             })
             
             for call in tool_calls:
-                tool_name = call.function.name
-                arguments = json.loads(call.function.arguments)
+                tool_name = cast(Any, call).function.name
+                arguments = json.loads(cast(Any, call).function.arguments)
                 self.activity_callback(f"Calling FRED tool: {tool_name}")
                 try:
                     tool_result = await self.call_tool(tool_name, arguments)
