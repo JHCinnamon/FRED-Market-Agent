@@ -1,57 +1,46 @@
-# "Concierge" Zapier MCP Agent
+# Local FRED Agent
 
-A Windows desktop chat application that uses a local Ollama model to discuss and invoke tools exposed by a Zapier remote MCP server. The desktop UI is deliberately limited to the conversation history and message composer.
+A Windows desktop application that uses a model hosted by LM Studio to answer economic-data questions with the Federal Reserve Economic Data (FRED) API.
 
 ## Components
 
-- **Tkinter desktop UI**: shows the Zapier discussion history and a message composer after the server connection succeeds.
-- **Ollama**: runs the local `qwen3.5:35b` model at `http://localhost:11434`.
-- **MCP client**: connects through streamable HTTP to Zapier at `https://mcp.zapier.com/api/v1/connect`, discovers its tools, and calls tools selected by the model.
-- **OllMCP login**: launches the installed `ollmcp` CLI against the supplied Zapier URL so the user can complete Zapier authentication before the desktop UI opens.
+- **Desktop UI**: Tkinter chat window with professionally formatted responses and a chart tab for retrieved FRED observations.
+- **FRED agent**: searches FRED series and retrieves series metadata and observations.
+- **LM Studio**: provides an OpenAI-compatible local API at `http://localhost:1234/v1` using the `qwen3.6-27b` model.
 
 ## Prerequisites
 
-1. Install [Ollama](https://ollama.com/) for Windows.
-2. Install Python 3.12 or a compatible Python version with Tk support.
-3. Have a Zapier account and its MCP connection URL.
+1. Python 3.12 or a compatible version with Tk support.
+2. [LM Studio](https://lmstudio.ai/) running its local server on port `1234`.
+3. The `qwen3.6-27b` model loaded in LM Studio.
+4. A [FRED API key](https://fred.stlouisfed.org/docs/api/api_key.html).
 
 ## Setup
 
-Pull the model required by the application:
-
-```powershell
-ollama pull qwen3.5:35b
-```
-
-Start Ollama if it is not already running:
-
-```powershell
-ollama serve
-```
-
-The application checks for and installs its Python packages (`ollama`, `ollmcp`, and `mcp`) on first launch. To install them yourself instead, run:
+Install the required packages:
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
+In LM Studio, load `qwen3.6-27b` and start its local server. The server must be available at `http://localhost:1234/v1`.
+
 ## Run
 
-From this directory, start the app:
+From this directory, start the application:
 
 ```powershell
-python "[Template] Agentic MCP Outline.py"
+python app.py
 ```
+
+Enter your FRED API key when prompted. The key is used only for the current application session.
 
 ## Use
 
-1. At the terminal prompt, paste the Zapier MCP connection URL.
-2. OllMCP opens against that server. Complete the Zapier sign-in flow, then exit OllMCP to return to the launcher.
-3. The launcher verifies the Zapier connection. It opens the discussion window only after the server has connected successfully.
-4. Enter a request in the composer and select **Send**. The agent reconnects to Zapier for that request, lists the available tools, calls tools as needed, and displays its answer.
+Ask for an indicator by name or series ID. The agent can search the FRED catalog, retrieve series details, and retrieve recent or date-bounded observations. When it retrieves observations, the application draws a colorful time-series chart in the **Charts** tab. Common US indicators include unemployment (`UNRATE`), consumer prices (`CPIAUCSL`), personal consumption expenditures (`PCEPI`), and real GDP (`GDPC1`).
 
 ## Troubleshooting
 
-- If the status says Ollama is unavailable, run `ollama serve` and verify that port `11434` is available.
-- If the status says to pull the model, run `ollama pull qwen3.5:35b`.
-- If Zapier connection or tool calls fail, rerun the application, complete the OllMCP sign-in flow, and confirm the supplied MCP URL has access to the Zapier tools you expect.
+- If the app cannot connect to the model, start LM Studio's local server and confirm port `1234` is available.
+- If the model does not respond, load `qwen3.6-27b` in LM Studio and confirm its OpenAI-compatible API is enabled.
+- If FRED requests fail, confirm that the API key is valid and has been entered correctly.

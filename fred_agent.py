@@ -6,7 +6,6 @@ import os
 import requests
 from typing import Any, Dict, List
 from openai import OpenAI
-from pydantic import BaseModel
 
 # FRED API Configuration
 FRED_API_BASE_URL = "https://api.stlouisfed.org/fred"
@@ -21,30 +20,13 @@ class FredAPIError(Exception):
     """Custom exception for FRED API errors."""
     pass
 
-class FredSeries(BaseModel):
-    """Data model for FRED series information."""
-    id: str
-    title: str
-    observation_start: str
-    observation_end: str
-    frequency: str
-    units: str
-    seasonal_adjustment: str
-    last_updated: str
-    popularity: int
-    group_id: str
-
-class FredSeriesData(BaseModel):
-    """Data model for FRED series data."""
-    date: str
-    value: float
-
 class LocalFREDAgent:
     """Local FRED Agent that can query economic data using the FRED API."""
     
-    def __init__(self, api_key: str = None, activity_callback=None):
+    def __init__(self, api_key: str = None, activity_callback=None, chart_callback=None):
         self.api_key = api_key or FRED_API_KEY
         self.activity_callback = activity_callback or (lambda _: None)
+        self.chart_callback = chart_callback or (lambda _series_id, _observations: None)
         self.client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
         self.tool_map: Dict[str, Any] = {}
         self.openai_tools = []
@@ -199,7 +181,9 @@ class LocalFREDAgent:
             
             # Extract the observations from the response
             if 'observations' in data:
-                return data['observations']
+                observations = data['observations']
+                self.chart_callback(series_id, observations)
+                return observations
             else:
                 return []
         except Exception as e:
@@ -328,7 +312,10 @@ class LocalFREDAgent:
                     "four relevant series in one bounded batch with limit 12, then write the "
                     "report from those results. Treat forecasts as uncertain estimates, state "
                     "the data-release lag, and do not make additional searches unless a series "
-                    "is unavailable."
+                    "is unavailable. When a user requests a chart, graph, plot, or visualization, "
+                    "retrieve the relevant series observations so the desktop application can "
+                    "render the chart. Format final answers with concise Markdown headings, "
+                    "bullet points, bold emphasis, and inline code where helpful."
                 ),
             },
             *conversation,
