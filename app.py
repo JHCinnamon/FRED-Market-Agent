@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from typing import Any, Dict, List, Tuple
 
 
@@ -15,6 +16,7 @@ REQUIRED_PACKAGES = {
     "openai": "openai",
     "requests": "requests",
 }
+PROMPT_TOKEN_REFRESH_MS = 750
 
 
 def ensure_packages() -> None:
@@ -49,6 +51,13 @@ class FredAgentApp(tk.Tk):
         self.conversation: list[Dict[str, str]] = []
         self.chart_canvases: List[FigureCanvasTkAgg] = []
         self.run_number = 0
+        self.session_tokens = 0
+        self.prompt_tokens = 0
+        self.prompt_started_at = 0.0
+        self.prompt_seed_tokens = 0
+        self.progress_percent = 0
+        self.working = False
+        self.dot_phase = 0
         self._configure_theme()
         self._build_ui()
 
@@ -117,13 +126,14 @@ class FredAgentApp(tk.Tk):
             foreground=self.colors["cyan"],
             font=("Segoe UI Semibold", 10),
         ).pack(side=tk.LEFT)
-        tk.Label(
+        self.token_totals = tk.Label(
             header,
-            text="Live economic analysis",
+            text="Session 0 tok  |  Prompt 0 tok",
             background=self.colors["ink"],
             foreground=self.colors["muted"],
-            font=("Segoe UI", 10),
-        ).pack(side=tk.RIGHT)
+            font=("Cascadia Mono", 8),
+        )
+        self.token_totals.pack(side=tk.RIGHT)
 
         self.transcript = scrolledtext.ScrolledText(
             conversation_frame,
@@ -149,8 +159,45 @@ class FredAgentApp(tk.Tk):
         self.transcript.tag_configure("code", foreground=self.colors["cyan"], font=("Cascadia Mono", 10))
         self.transcript.grid(row=1, column=0, sticky="nsew")
 
+        self.working_frame = tk.Frame(self, background=self.colors["ink"], padx=14, pady=3)
+        self.working_frame.grid(row=1, column=0, sticky="ew")
+        self.working_frame.columnconfigure(2, weight=1)
+        self.working_label = tk.Label(
+            self.working_frame,
+            text="",
+            background=self.colors["ink"],
+            foreground=self.colors["amber"],
+            font=("Segoe UI Semibold", 9),
+            anchor="w",
+        )
+        self.working_label.grid(row=0, column=0, sticky="w")
+        dot_group = tk.Frame(self.working_frame, background=self.colors["ink"], width=32, height=20)
+        dot_group.grid(row=0, column=1, sticky="w", padx=(5, 0))
+        dot_group.grid_propagate(False)
+        self.dot_labels = []
+        for index in range(3):
+            dot = tk.Label(
+                dot_group,
+                text=".",
+                background=self.colors["ink"],
+                foreground=self.colors["muted"],
+                font=("Segoe UI Semibold", 12),
+            )
+            dot.place(x=index * 9, y=3, width=9, height=16)
+            self.dot_labels.append(dot)
+        self.working_detail = tk.Label(
+            self.working_frame,
+            text="",
+            background=self.colors["ink"],
+            foreground=self.colors["muted"],
+            font=("Cascadia Mono", 8),
+            anchor="e",
+        )
+        self.working_detail.grid(row=0, column=3, sticky="e")
+        self.working_frame.grid_remove()
+
         prompt_frame = tk.Frame(self, background=self.colors["ink"], padx=14, pady=14)
-        prompt_frame.grid(row=1, column=0, sticky="ew")
+        prompt_frame.grid(row=2, column=0, sticky="ew")
         prompt_frame.columnconfigure(0, weight=1)
         self.prompt = tk.Text(
             prompt_frame,
@@ -183,6 +230,7 @@ class FredAgentApp(tk.Tk):
         self.prompt.delete("1.0", tk.END)
         self.conversation.append({"role": "user", "content": question})
         self._append("You", question)
+        self._start_working(question)
         self.send_button.configure(state=tk.DISABLED)
         threading.Thread(
             target=self._run_agent, args=(self.conversation.copy(),), daemon=True
@@ -195,7 +243,9 @@ class FredAgentApp(tk.Tk):
             agent = LocalFREDAgent(
                 api_key=self.api_key,
                 twelve_data_api_key=self.twelve_data_api_key,
+                activity_callback=self._queue_activity,
                 chart_callback=lambda series_id, observations: charts.__setitem__(series_id, observations),
+                token_callback=self._queue_token_usage,
             )
             return await agent.run(conversation)
 
@@ -206,6 +256,89 @@ class FredAgentApp(tk.Tk):
             self.after(0, self._append, "Error", str(error))
         finally:
             self.after(0, self.send_button.configure, {"state": tk.NORMAL})
+            self.after(0, self._stop_working)
+
+    def _start_working(self, question: str) -> None:
+        self.working = True
+        self.prompt_tokens = 0
+        self.prompt_started_at = time.monotonic()
+        self.prompt_seed_tokens = max(1, (len(question) + 2) // 3)
+        self.progress_percent = 5
+        self.working_frame.grid()
+        self._set_working_detail("Preparing the model request")
+        self._animate_working()
+        self._refresh_prompt_token_total()
+
+    def _stop_working(self) -> None:
+        self.working = False
+        self.working_frame.grid_remove()
+        self._update_token_totals()
+
+    def _queue_activity(self, detail: str) -> None:
+        self.after(0, self._set_working_detail, detail)
+
+    def _set_working_detail(self, detail: str) -> None:
+        if not self.working:
+            return
+        self.progress_percent = max(self.progress_percent, self._progress_for_activity(detail))
+        self.working_label.configure(text=detail)
+        self.working_detail.configure(text=self._working_text())
+
+    def _queue_token_usage(self, usage: Dict[str, Any]) -> None:
+        self.after(0, self._record_token_usage, usage)
+
+    def _record_token_usage(self, usage: Dict[str, Any]) -> None:
+        total_tokens = int(usage["total_tokens"])
+        self.prompt_tokens += total_tokens
+        self.session_tokens += total_tokens
+        self.progress_percent = max(self.progress_percent, 35)
+        self._update_token_totals()
+
+    def _progress_for_activity(self, detail: str) -> int:
+        if detail.startswith("Retrieving data"):
+            return 60
+        if detail.startswith("Reviewing"):
+            return 45
+        if detail.startswith("Synthesizing"):
+            return 85
+        if detail.startswith("Context"):
+            return 20
+        return 10
+
+    def _working_text(self) -> str:
+        elapsed = max(0.0, time.monotonic() - self.prompt_started_at)
+        live_tokens = self._live_prompt_tokens()
+        progress = min(95, max(self.progress_percent, int(elapsed * 2) + 5))
+        tokens_per_second = live_tokens / max(elapsed, 0.1)
+        return f"{progress}% est.  |  ~{live_tokens:,} tok  |  {tokens_per_second:.1f} tok/s"
+
+    def _animate_working(self) -> None:
+        if not self.working:
+            return
+        self.dot_phase = (self.dot_phase + 1) % 3
+        for index, dot in enumerate(self.dot_labels):
+            active = index == self.dot_phase
+            dot.configure(foreground=self.colors["amber"] if active else self.colors["muted"])
+            dot.place_configure(y=0 if active else 3)
+        self.working_detail.configure(text=self._working_text())
+        self.after(300, self._animate_working)
+
+    def _live_prompt_tokens(self) -> int:
+        elapsed = max(0.0, time.monotonic() - self.prompt_started_at)
+        estimated_base = self.prompt_tokens or self.prompt_seed_tokens
+        return estimated_base + int(elapsed * 4)
+
+    def _refresh_prompt_token_total(self) -> None:
+        if not self.working:
+            return
+        self._update_token_totals(prompt_tokens=self._live_prompt_tokens())
+        self.after(PROMPT_TOKEN_REFRESH_MS, self._refresh_prompt_token_total)
+
+    def _update_token_totals(self, prompt_tokens: int | None = None) -> None:
+        displayed_prompt_tokens = self.prompt_tokens if prompt_tokens is None else prompt_tokens
+        self.token_totals.configure(
+            text=f"Session {self.session_tokens:,} tok  |  Prompt {displayed_prompt_tokens:,} tok"
+        )
 
     def _append(self, speaker: str, text: str) -> None:
         self.transcript.configure(state=tk.NORMAL)

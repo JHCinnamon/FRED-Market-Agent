@@ -15,6 +15,7 @@ TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 MODEL_CONTEXT_TOKENS = 8_192
 MAX_COMPLETION_TOKENS = 3_072
 REQUEST_TOKEN_BUDGET = 4_800
+HISTORY_TOKEN_BUDGET = 900
 TOOL_RESULT_CHAR_LIMIT = 8_000
 DEFAULT_OBSERVATION_LIMIT = 12
 
@@ -35,11 +36,13 @@ class LocalFREDAgent:
         twelve_data_api_key: Optional[str] = None,
         activity_callback=None,
         chart_callback=None,
+        token_callback=None,
     ):
         self.api_key = api_key or FRED_API_KEY
         self.twelve_data_api_key = twelve_data_api_key or TWELVE_DATA_API_KEY
         self.activity_callback = activity_callback or (lambda _: None)
         self.chart_callback = chart_callback or (lambda _series_id, _observations: None)
+        self.token_callback = token_callback or (lambda _usage: None)
         self.client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
         self.tool_map: Dict[str, Any] = {}
         self.openai_tools = []
@@ -192,7 +195,7 @@ class LocalFREDAgent:
                 }
             }
         ]
-    
+
     def _make_fred_request(self, endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Make a request to the FRED API."""
         params['api_key'] = self.api_key
@@ -214,7 +217,9 @@ class LocalFREDAgent:
         params["apikey"] = self.twelve_data_api_key
         try:
             response = requests.get(
-                f"{TWELVE_DATA_API_BASE_URL}/{endpoint}", params=params, timeout=20
+                f"{TWELVE_DATA_API_BASE_URL}/{endpoint}",
+                params=params,
+                timeout=20,
             )
             response.raise_for_status()
             data = response.json()
@@ -439,12 +444,17 @@ class LocalFREDAgent:
             prior_turns.append(current_turn)
 
         kept_turns: List[List[Dict[str, Any]]] = []
+        history_tokens = 0
         for turn in reversed(prior_turns):
             turn_tokens = sum(self._message_token_count(message) for message in turn)
-            if used_tokens + turn_tokens > max_tokens:
+            if (
+                history_tokens + turn_tokens > HISTORY_TOKEN_BUDGET
+                or used_tokens + turn_tokens > max_tokens
+            ):
                 continue
             kept_turns.append(turn)
             used_tokens += turn_tokens
+            history_tokens += turn_tokens
 
         return [system_message] + [
             message for turn in reversed(kept_turns) for message in turn
@@ -475,7 +485,32 @@ class LocalFREDAgent:
             max_tokens=MAX_COMPLETION_TOKENS,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
-    
+
+    def _report_token_usage(self, response: Any, messages: List[Dict[str, Any]]) -> None:
+        """Report server usage when available, otherwise a request-size estimate."""
+        estimated_prompt_tokens = (
+            sum(self._message_token_count(message) for message in messages)
+            + self._token_count(self.openai_tools)
+        )
+        usage = getattr(response, "usage", None)
+        prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
+        completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
+        total_tokens = getattr(usage, "total_tokens", None) if usage else None
+        has_reported_usage = any(
+            value is not None for value in (prompt_tokens, completion_tokens, total_tokens)
+        )
+        prompt_tokens = prompt_tokens if prompt_tokens is not None else estimated_prompt_tokens
+        completion_tokens = completion_tokens if completion_tokens is not None else 0
+        total_tokens = total_tokens if total_tokens is not None else prompt_tokens + completion_tokens
+        self.token_callback(
+            {
+                "prompt_tokens": int(prompt_tokens),
+                "completion_tokens": int(completion_tokens),
+                "total_tokens": int(total_tokens),
+                "estimated": not has_reported_usage,
+            }
+        )
+
     async def run(self, conversation: List[Dict[str, str]]) -> str:
         """Run the agent with a conversation."""
         # Create initial messages with system prompt
@@ -513,6 +548,7 @@ class LocalFREDAgent:
         
         # Truncate messages to prevent context overflow
         messages = self._truncate_messages(messages)
+        self.activity_callback("Preparing the model request")
         
         while True:
             try:
@@ -520,11 +556,13 @@ class LocalFREDAgent:
             except Exception as e:
                 # If we get a context overflow error, truncate the conversation and retry
                 if "context" in str(e).lower() or "exceeds" in str(e).lower():
-                    self.activity_callback("Context window exceeded, truncating conversation...")
+                    self.activity_callback("Context window exceeded, truncating conversation")
                     messages = self._truncate_messages(messages, max_tokens=4_500)
                     response = self._create_completion(messages)
                 else:
                     raise e
+
+            self._report_token_usage(response, messages)
             
             assistant_message = response.choices[0].message
             tool_calls = assistant_message.tool_calls
@@ -539,6 +577,8 @@ class LocalFREDAgent:
                         "context window, then submit the request again."
                     )
                 return "The local model returned no visible answer. Please submit the request again."
+
+            self.activity_callback("Reviewing tool requests")
             
             messages.append({
                 "role": "assistant",
@@ -559,7 +599,7 @@ class LocalFREDAgent:
             for call in tool_calls:
                 tool_name = cast(Any, call).function.name
                 arguments = json.loads(cast(Any, call).function.arguments)
-                self.activity_callback(f"Calling FRED tool: {tool_name}")
+                self.activity_callback(f"Retrieving data with {tool_name}")
                 try:
                     tool_result = await self.call_tool(tool_name, arguments)
                     content = self._serialize_tool_result(tool_result)
@@ -575,3 +615,4 @@ class LocalFREDAgent:
                 )
                 
             messages = self._truncate_messages(messages)
+            self.activity_callback("Synthesizing the final response")
