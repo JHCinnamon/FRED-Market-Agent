@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import requests
 from typing import Any, Dict, List, Optional, cast
 from openai import OpenAI
@@ -18,6 +19,12 @@ REQUEST_TOKEN_BUDGET = 4_800
 HISTORY_TOKEN_BUDGET = 900
 TOOL_RESULT_CHAR_LIMIT = 8_000
 DEFAULT_OBSERVATION_LIMIT = 12
+MARKET_SYMBOL_PATTERN = re.compile(
+    r"\b(?:S&P\s*500|NASDAQ(?:\s+COMPOSITE)?|DOW(?:\s+JONES)?|CSI\s*300)\b"
+    r"|\$[A-Za-z]{1,5}\b|\b[A-Za-z]{3}/[A-Za-z]{3}\b",
+    re.IGNORECASE,
+)
+MAX_PREFLIGHT_SYMBOL_SEARCHES = 2
 
 class FredAPIError(Exception):
     """Custom exception for FRED API errors."""
@@ -243,6 +250,27 @@ class LocalFREDAgent:
             }
             for item in data.get("data", [])
         ]
+
+    def _market_symbol_queries(self, question: str) -> List[str]:
+        """Extract explicit market identifiers suitable for a symbol lookup."""
+        queries: List[str] = []
+        for match in MARKET_SYMBOL_PATTERN.finditer(question):
+            query = match.group(0).lstrip("$")
+            if query.casefold() not in {item.casefold() for item in queries}:
+                queries.append(query)
+        return queries[:MAX_PREFLIGHT_SYMBOL_SEARCHES]
+
+    async def _prefetch_market_symbols(self, question: str) -> Dict[str, List[Dict[str, Any]]]:
+        """Resolve explicit market identifiers before the model plans its tool calls."""
+        matches: Dict[str, List[Dict[str, Any]]] = {}
+        for query in self._market_symbol_queries(question):
+            try:
+                results = await self.search_market_symbols(query, limit=3)
+            except TwelveDataAPIError:
+                continue
+            if results:
+                matches[query] = results
+        return matches
 
     async def get_market_quote(self, symbol: str) -> Dict[str, Any]:
         """Get the latest market quote from Twelve Data."""
@@ -513,6 +541,18 @@ class LocalFREDAgent:
 
     async def run(self, conversation: List[Dict[str, str]]) -> str:
         """Run the agent with a conversation."""
+        latest_question = next(
+            (message["content"] for message in reversed(conversation) if message["role"] == "user"),
+            "",
+        )
+        market_symbol_matches = await self._prefetch_market_symbols(latest_question)
+        preflight_context = ""
+        if market_symbol_matches:
+            preflight_context = (
+                " Twelve Data preflight market-symbol matches for this request: "
+                f"{json.dumps(market_symbol_matches, ensure_ascii=True)}. "
+                "Use these matches when planning market-data retrieval."
+            )
         # Create initial messages with system prompt
         messages = [
             {
@@ -524,7 +564,9 @@ class LocalFREDAgent:
                     "US economic series. Use Twelve Data for stocks, ETFs, mutual funds, indices, "
                     "forex, crypto, quotes, and market-price history. For an economic question that "
                     "would be clearer with market context, you may use both sources, but do not "
-                    "fetch market data merely for decoration. Use a tool whenever it is necessary "
+                    "fetch market data merely for decoration. Treat company, stock, and stocks as "
+                    "Twelve Data requests, even when the question also includes macroeconomic context. "
+                    "Use a tool whenever it is necessary "
                     "and identify the source and observation date for material claims. "
                     "For common US indicators, use UNRATE, CPIAUCSL, PCEPI, and GDPC1 directly "
                     "instead of searching. For a multi-indicator economic report, retrieve the "
@@ -540,7 +582,7 @@ class LocalFREDAgent:
                     "and never return only headings or a chart label. Forecasts must include a "
                     "range, assumptions, uncertainty, and the data-release lag. Format final "
                     "answers with concise Markdown headings, bullet points, bold emphasis, and "
-                    "inline code where helpful."
+                    f"inline code where helpful.{preflight_context}"
                 ),
             },
             *conversation,
