@@ -8,7 +8,7 @@ import requests
 from typing import Any, Dict, List, Optional, cast
 from openai import OpenAI
 
-# FRED API Configuration
+# API endpoints, model limits, and budgets shared by every agent run.
 FRED_API_BASE_URL = "https://api.stlouisfed.org/fred"
 FRED_API_KEY = os.getenv("FRED_API_KEY", "")  # Get from environment variable
 TWELVE_DATA_API_BASE_URL = "https://api.twelvedata.com"
@@ -24,6 +24,7 @@ MARKET_SYMBOL_PATTERN = re.compile(
     r"|\$[A-Za-z]{1,5}\b|\b[A-Za-z]{3}/[A-Za-z]{3}\b",
     re.IGNORECASE,
 )
+# Avoid turning a broad market question into an unbounded sequence of symbol searches.
 MAX_PREFLIGHT_SYMBOL_SEARCHES = 2
 
 class FredAPIError(Exception):
@@ -50,6 +51,7 @@ class LocalFREDAgent:
         self.activity_callback = activity_callback or (lambda _: None)
         self.chart_callback = chart_callback or (lambda _series_id, _observations: None)
         self.token_callback = token_callback or (lambda _usage: None)
+        # LM Studio exposes the locally loaded Qwen model through an OpenAI-compatible endpoint.
         self.client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
         self.tool_map: Dict[str, Any] = {}
         self.openai_tools = []
@@ -59,7 +61,7 @@ class LocalFREDAgent:
     
     def _setup_tools(self) -> None:
         """Setup available tools for the agent."""
-        # Define FRED API tools
+        # Map model-visible function names to the concrete async implementations.
         self.tool_map = {
             "search_fred_series": self.search_fred_series,
             "get_fred_series_data": self.get_fred_series_data,
@@ -69,7 +71,7 @@ class LocalFREDAgent:
             "get_market_time_series": self.get_market_time_series,
         }
         
-        # Create OpenAI-compatible tool definitions
+        # Send JSON schemas to LM Studio so Qwen can issue structured tool calls.
         self.openai_tools = [
             {
                 "type": "function",
@@ -205,6 +207,7 @@ class LocalFREDAgent:
 
     def _make_fred_request(self, endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Make a request to the FRED API."""
+        # FRED expects its credentials and JSON response type on every request.
         params['api_key'] = self.api_key
         params['file_type'] = 'json'
         
@@ -217,6 +220,7 @@ class LocalFREDAgent:
 
     def _make_twelve_data_request(self, endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Make an authenticated request to Twelve Data and surface API errors clearly."""
+        # Fail before a network call when the optional market-data credential is unavailable.
         if not self.twelve_data_api_key:
             raise TwelveDataAPIError(
                 "A Twelve Data API key is required. Set TWELVE_DATA_API_KEY or enter it at startup."
@@ -238,6 +242,7 @@ class LocalFREDAgent:
 
     async def search_market_symbols(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Search Twelve Data's market symbol catalog."""
+        # Return only fields useful for choosing an unambiguous market instrument.
         self.activity_callback(f"Searching market symbols: {query}")
         data = self._make_twelve_data_request(
             "symbol_search", {"symbol": query, "outputsize": max(1, min(int(limit), 10))}
@@ -253,6 +258,7 @@ class LocalFREDAgent:
 
     def _market_symbol_queries(self, question: str) -> List[str]:
         """Extract explicit market identifiers suitable for a symbol lookup."""
+        # Deduplicate case-insensitively because a prompt may repeat the same identifier.
         queries: List[str] = []
         for match in MARKET_SYMBOL_PATTERN.finditer(question):
             query = match.group(0).lstrip("$")
@@ -262,6 +268,7 @@ class LocalFREDAgent:
 
     async def _prefetch_market_symbols(self, question: str) -> Dict[str, List[Dict[str, Any]]]:
         """Resolve explicit market identifiers before the model plans its tool calls."""
+        # A failed preflight must not prevent the model from using its normal tools later.
         matches: Dict[str, List[Dict[str, Any]]] = {}
         for query in self._market_symbol_queries(question):
             try:
@@ -298,6 +305,7 @@ class LocalFREDAgent:
                 "outputsize": max(2, min(int(limit), 60)),
             },
         )
+        # Normalize Twelve Data's timestamped closes into the same chart callback shape as FRED.
         observations = [
             {"date": item.get("datetime", "")[:10], "value": item.get("close")}
             for item in data.get("values", [])
@@ -308,9 +316,11 @@ class LocalFREDAgent:
     
     async def search_fred_series(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Search for FRED economic series by keyword."""
+        # Restrict search output to metadata the model can use to select a series.
         self.activity_callback(f"Searching for FRED series: {query}")
         
         try:
+            # Descending order makes bounded requests return the newest observations first.
             params = {
                 "search_text": query,
                 "limit": max(1, min(int(limit), 5)),
@@ -389,6 +399,7 @@ class LocalFREDAgent:
     
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         """Call a tool by name with given arguments."""
+        # Reject invented tool names rather than exposing arbitrary methods to the model.
         if name not in self.tool_map:
             raise ValueError(f"Unknown tool: {name}")
         
@@ -397,6 +408,7 @@ class LocalFREDAgent:
     
     def _token_count(self, value: Any) -> int:
         """Conservatively estimate tokens in serialized OpenAI request data."""
+        # Usage metadata is not always returned by local servers, so use a stable character estimate.
         if not isinstance(value, str):
             value = json.dumps(value, default=str, ensure_ascii=True, separators=(",", ":"))
         return (len(value) + 2) // 3
@@ -435,6 +447,7 @@ class LocalFREDAgent:
         non_system_messages = [
             message for message in messages if message.get("role") != "system"
         ]
+        # Reserve space for tool schemas and a completion so requests fit the loaded context.
         request_overhead = self._token_count(self.openai_tools) + 1_024
         base_tokens = self._message_token_count(system_message) + request_overhead
         latest_user_index = max(
@@ -471,6 +484,7 @@ class LocalFREDAgent:
         if current_turn:
             prior_turns.append(current_turn)
 
+        # Retain only a small recent-history window; long reports should not slow future requests.
         kept_turns: List[List[Dict[str, Any]]] = []
         history_tokens = 0
         for turn in reversed(prior_turns):
@@ -490,6 +504,7 @@ class LocalFREDAgent:
 
     def _serialize_tool_result(self, result: Any) -> str:
         """Serialize a bounded tool result so one API response cannot fill context."""
+        # Tool payloads become messages in the next completion, so cap their serialized size.
         if hasattr(result, "model_dump"):
             result = result.model_dump()
         content = json.dumps(result, default=str, ensure_ascii=True, separators=(",", ":"))
@@ -506,6 +521,7 @@ class LocalFREDAgent:
 
     def _create_completion(self, messages: List[Dict[str, Any]]):
         """Create a concise response compatible with LM Studio's Qwen template."""
+        # Disable Qwen's hidden reasoning channel so the UI receives concise visible answers.
         return self.client.chat.completions.create(
             model="qwen3.6-27b",
             messages=cast(Any, messages),
@@ -516,6 +532,7 @@ class LocalFREDAgent:
 
     def _report_token_usage(self, response: Any, messages: List[Dict[str, Any]]) -> None:
         """Report server usage when available, otherwise a request-size estimate."""
+        # Fall back to local estimates when LM Studio does not include usage in its response.
         estimated_prompt_tokens = (
             sum(self._message_token_count(message) for message in messages)
             + self._token_count(self.openai_tools)
@@ -541,6 +558,7 @@ class LocalFREDAgent:
 
     async def run(self, conversation: List[Dict[str, str]]) -> str:
         """Run the agent with a conversation."""
+        # Resolve explicit symbols before planning so the model sees candidate market identifiers.
         latest_question = next(
             (message["content"] for message in reversed(conversation) if message["role"] == "user"),
             "",
@@ -548,12 +566,13 @@ class LocalFREDAgent:
         market_symbol_matches = await self._prefetch_market_symbols(latest_question)
         preflight_context = ""
         if market_symbol_matches:
+            # Add matches to the initial instruction without changing the user conversation.
             preflight_context = (
                 " Twelve Data preflight market-symbol matches for this request: "
                 f"{json.dumps(market_symbol_matches, ensure_ascii=True)}. "
                 "Use these matches when planning market-data retrieval."
             )
-        # Create initial messages with system prompt
+        # Build a single leading system message because Qwen's chat template requires that placement.
         messages = [
             {
                 "role": "system",
@@ -588,11 +607,12 @@ class LocalFREDAgent:
             *conversation,
         ]
         
-        # Truncate messages to prevent context overflow
+        # Enforce the request budget before the first local-model completion.
         messages = self._truncate_messages(messages)
         self.activity_callback("Preparing the model request")
         
         while True:
+            # Each iteration is either a final answer or one structured tool-call round.
             try:
                 response = self._create_completion(messages)
             except Exception as e:
@@ -622,6 +642,7 @@ class LocalFREDAgent:
 
             self.activity_callback("Reviewing tool requests")
             
+            # Preserve the assistant tool-call envelope so following tool results retain their call IDs.
             messages.append({
                 "role": "assistant",
                 "content": assistant_message.content,
@@ -639,6 +660,7 @@ class LocalFREDAgent:
             })
             
             for call in tool_calls:
+                # Return tool errors to Qwen as data, allowing it to recover in its final response.
                 tool_name = cast(Any, call).function.name
                 arguments = json.loads(cast(Any, call).function.arguments)
                 self.activity_callback(f"Retrieving data with {tool_name}")

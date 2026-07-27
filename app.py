@@ -16,11 +16,13 @@ REQUIRED_PACKAGES = {
     "openai": "openai",
     "requests": "requests",
 }
+# Refresh the provisional token display while a local-model request is running.
 PROMPT_TOKEN_REFRESH_MS = 750
 
 
 def ensure_packages() -> None:
     """Install the Python dependencies when this script is started directly."""
+    # The GUI can run from a fresh Python environment without a separate setup step.
     missing_packages = [
         package
         for module, package in REQUIRED_PACKAGES.items()
@@ -32,6 +34,7 @@ def ensure_packages() -> None:
 
 ensure_packages()
 
+# Import GUI and chart dependencies only after the lightweight dependency check.
 import tkinter as tk
 from tkinter import scrolledtext, ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -48,7 +51,9 @@ class FredAgentApp(tk.Tk):
         self.title("Economic and Market Data Agent")
         self.minsize(760, 560)
         self.geometry("900x680")
+        # Conversation messages are the durable context sent back to the agent on each turn.
         self.conversation: list[Dict[str, str]] = []
+        # Keep Tk-backed canvases alive for as long as their inline chart panels are visible.
         self.chart_canvases: List[FigureCanvasTkAgg] = []
         self.run_number = 0
         self.session_tokens = 0
@@ -62,6 +67,7 @@ class FredAgentApp(tk.Tk):
         self._build_ui()
 
     def _configure_theme(self) -> None:
+        # Keep Tk widgets and generated Matplotlib charts on the same visual palette.
         colors = {
             "ink": "#10151f",
             "surface": "#18212f",
@@ -109,6 +115,7 @@ class FredAgentApp(tk.Tk):
         self.colors = colors
 
     def _build_ui(self) -> None:
+        # The top-level grid reserves expandable space for the transcript.
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
@@ -135,6 +142,7 @@ class FredAgentApp(tk.Tk):
         )
         self.token_totals.pack(side=tk.RIGHT)
 
+        # A disabled text widget acts as the append-only run feed and hosts inline chart windows.
         self.transcript = scrolledtext.ScrolledText(
             conversation_frame,
             wrap=tk.WORD,
@@ -159,6 +167,7 @@ class FredAgentApp(tk.Tk):
         self.transcript.tag_configure("code", foreground=self.colors["cyan"], font=("Cascadia Mono", 10))
         self.transcript.grid(row=1, column=0, sticky="nsew")
 
+        # This status strip is hidden between requests and shows background-agent progress.
         self.working_frame = tk.Frame(self, background=self.colors["ink"], padx=14, pady=3)
         self.working_frame.grid(row=1, column=0, sticky="ew")
         self.working_frame.columnconfigure(2, weight=1)
@@ -232,11 +241,13 @@ class FredAgentApp(tk.Tk):
         self._append("You", question)
         self._start_working(question)
         self.send_button.configure(state=tk.DISABLED)
+        # Run the blocking local-model workflow off the Tk event loop to keep the UI responsive.
         threading.Thread(
             target=self._run_agent, args=(self.conversation.copy(),), daemon=True
         ).start()
 
     def _run_agent(self, conversation: list[Dict[str, str]]) -> None:
+        # Each run owns its retrieved chart data until its final response is rendered.
         charts: Dict[str, List[Dict[str, Any]]] = {}
 
         async def execute() -> str:
@@ -244,6 +255,7 @@ class FredAgentApp(tk.Tk):
                 api_key=self.api_key,
                 twelve_data_api_key=self.twelve_data_api_key,
                 activity_callback=self._queue_activity,
+                # Agent callbacks occur on this worker thread; UI callbacks re-enter through after().
                 chart_callback=lambda series_id, observations: charts.__setitem__(series_id, observations),
                 token_callback=self._queue_token_usage,
             )
@@ -251,6 +263,7 @@ class FredAgentApp(tk.Tk):
 
         try:
             answer = asyncio.run(execute())
+            # Tk widgets may only be updated on the main thread.
             self.after(0, self._append_answer, answer, charts)
         except Exception as error:
             self.after(0, self._append, "Error", str(error))
@@ -259,6 +272,7 @@ class FredAgentApp(tk.Tk):
             self.after(0, self._stop_working)
 
     def _start_working(self, question: str) -> None:
+        # Seed live telemetry before LM Studio has returned authoritative usage metadata.
         self.working = True
         self.prompt_tokens = 0
         self.prompt_started_at = time.monotonic()
@@ -275,6 +289,7 @@ class FredAgentApp(tk.Tk):
         self._update_token_totals()
 
     def _queue_activity(self, detail: str) -> None:
+        # Marshal agent progress from the worker thread onto Tk's event loop.
         self.after(0, self._set_working_detail, detail)
 
     def _set_working_detail(self, detail: str) -> None:
@@ -288,6 +303,7 @@ class FredAgentApp(tk.Tk):
         self.after(0, self._record_token_usage, usage)
 
     def _record_token_usage(self, usage: Dict[str, Any]) -> None:
+        # A tool-using answer can have several model completions, so totals are accumulated per run.
         total_tokens = int(usage["total_tokens"])
         self.prompt_tokens += total_tokens
         self.session_tokens += total_tokens
@@ -321,6 +337,7 @@ class FredAgentApp(tk.Tk):
             dot.configure(foreground=self.colors["amber"] if active else self.colors["muted"])
             dot.place_configure(y=0 if active else 3)
         self.working_detail.configure(text=self._working_text())
+        # Continue the animation only while a request remains active.
         self.after(300, self._animate_working)
 
     def _live_prompt_tokens(self) -> int:
@@ -341,6 +358,7 @@ class FredAgentApp(tk.Tk):
         )
 
     def _append(self, speaker: str, text: str) -> None:
+        # Temporarily enable the transcript because user interaction remains disabled.
         self.transcript.configure(state=tk.NORMAL)
         self.run_number += 1
         tag = "user" if speaker == "You" else "agent"
@@ -353,6 +371,7 @@ class FredAgentApp(tk.Tk):
         self.transcript.see(tk.END)
 
     def _append_answer(self, answer: str, charts: Dict[str, List[Dict[str, Any]]]) -> None:
+        # Preserve the assistant answer as the next turn's conversational context.
         self.conversation.append({"role": "assistant", "content": answer})
         self._append("Agent", answer)
         if charts:
@@ -361,6 +380,7 @@ class FredAgentApp(tk.Tk):
 
     def _build_data_synopsis(self, chart_data: Dict[str, List[Dict[str, Any]]]) -> str:
         """Summarize the plotted observations when a model response is incomplete."""
+        # Convert heterogeneous FRED and Twelve Data records into one date/value representation.
         labels = {
             "UNRATE": "Unemployment rate",
             "CPIAUCSL": "Consumer price index",
@@ -401,6 +421,7 @@ class FredAgentApp(tk.Tk):
         return "\n".join(lines)
 
     def _append_formatted_text(self, text: str) -> None:
+        # Render the small Markdown subset emitted by the model using Tk text tags.
         for line in text.splitlines() or [""]:
             if line.startswith("### "):
                 self.transcript.insert(tk.END, f"{line[4:]}\n", "subheading")
@@ -426,6 +447,7 @@ class FredAgentApp(tk.Tk):
                 self.transcript.insert(tk.END, part, "body")
 
     def _append_chart(self, chart_data: Dict[str, List[Dict[str, Any]]]) -> None:
+        # Normalize raw API observations before creating one independently scaled panel per series.
         series_points: Dict[str, List[Tuple[date, float]]] = {}
         for series_id, observations in chart_data.items():
             points: List[Tuple[date, float]] = []
@@ -439,6 +461,7 @@ class FredAgentApp(tk.Tk):
         if not series_points:
             return
 
+        # Matplotlib renders into a Tk widget so the chart can live inside the transcript feed.
         figure = Figure(
             figsize=(7.2, max(3.2, 2.3 * len(series_points))),
             dpi=100,
@@ -487,6 +510,7 @@ class FredAgentApp(tk.Tk):
 
 
 def bootstrap() -> Tuple[str, str]:
+    # Keep credentials out of the chat history and request the FRED key at application startup.
     print("Economic and Market Data Agent setup")
     api_key = input("Enter your FRED API key: ").strip()
     if not api_key:
