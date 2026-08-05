@@ -54,7 +54,7 @@ jobs:
             }
           } until ((Get-Date) -ge $apiDeadline)
 
-          throw "LM Studio is running, but its local API was not ready at $apiUri after 90 seconds. Start the local server and load qwen3.6-27b."
+          throw "LM Studio is running, but its local API was not ready at $apiUri after 90 seconds. Start the local server and load qwen/qwen3.6-27b."
 
       - name: Install Python dependencies
         shell: pwsh
