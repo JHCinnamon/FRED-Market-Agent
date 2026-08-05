@@ -2,4 +2,6 @@ actions-runner/__pycache__/
 *.py[cod]
 .venv/
 .env
+build/
+*.egg-info/
 actions-runner/

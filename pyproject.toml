@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "self-hosted-runner"
+version = "0.1"
+description = "Deploy the GitHub Actions runner tray launcher assets."
+requires-python = ">=3.9"
+
+[tool.setuptools]
+packages = ["self_hosted_runner"]
+
+[tool.setuptools.package-data]
+self_hosted_runner = ["assets/*.ico", "assets/*.ps1"]
