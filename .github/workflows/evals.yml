@@ -1,0 +1,35 @@
+name: Local Agent Evals
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    name: Run prompts on the local model
+    runs-on: [self-hosted, Windows, fred-evals]
+    timeout-minutes: 30
+    env:
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: python -m pip install -r requirements.txt
+
+      - name: Run prompt evaluations
+        shell: pwsh
+        run: python evals/run_evals.py --output "$env:RUNNER_TEMP\fred-eval-results.json"
+
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fred-eval-results
+          path: ${{ runner.temp }}/fred-eval-results.json
+          if-no-files-found: warn

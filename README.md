@@ -46,6 +46,29 @@ When it retrieves observations, the application draws a colorful time-series cha
 
 While the model is working, the small status strip shows the active agent phase in yellow beside animated dots, plus estimated completion, a live token estimate, and tokens per second. The header's prompt total refreshes on a short sampled cadence during active work, while the session total changes only when LM Studio returns completion usage metadata. When usage metadata is unavailable, the application uses its request-size estimate.
 
+## Prompt evaluations
+
+The repository includes black-box prompt evaluations in `evals/prompts.json`. The runner sends each prompt through `LocalFREDAgent`, validates its response and observed tool behavior, and emits a JSON report:
+
+```powershell
+$env:FRED_API_KEY = "your-fred-key"
+$env:TWELVE_DATA_API_KEY = "your-twelve-data-key" # Optional; enables market cases
+python evals/run_evals.py --output eval-results.json
+```
+
+LM Studio must be serving the loaded model at `http://localhost:1234/v1`. Cases that need an API key which is not configured are reported as skipped; failed cases cause the command to exit with status 1. Add or tune prompt checks in `evals/prompts.json` as the agent changes.
+
+### Run evals from GitHub while this PC is online
+
+`.github/workflows/evals.yml` is a manually triggered GitHub Actions workflow that runs only on a self-hosted Windows runner with the `fred-evals` label. A self-hosted runner keeps an outbound connection to GitHub, so GitHub never needs a port opened into this PC. When the runner is offline, the workflow remains queued until it comes back online.
+
+1. In the repository's GitHub settings, add `FRED_API_KEY` and optionally `TWELVE_DATA_API_KEY` as Actions secrets.
+2. In GitHub settings, add a self-hosted Windows runner on this PC and assign the custom label `fred-evals`. Use a dedicated account and repository-level runner where possible.
+3. Start LM Studio's local server before dispatching the workflow.
+4. In the GitHub Actions tab, select **Local Agent Evals** and choose **Run workflow**.
+
+The workflow checks out this repository onto the configured runner, installs the declared Python dependencies, writes an `fred-eval-results` artifact, and has access only to what that runner account can access. It does not expose remote desktop, shell, or a network service.
+
 ## Troubleshooting
 
 - If the app cannot connect to the model, start LM Studio's local server and confirm port `1234` is available.
