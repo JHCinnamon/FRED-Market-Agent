@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Tuple
 
 REQUIRED_PACKAGES = {
     "matplotlib": "matplotlib",
+    "lmstudio": "lmstudio",
     "openai": "openai",
     "requests": "requests",
 }

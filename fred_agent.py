@@ -6,6 +6,7 @@ import os
 import re
 import requests
 from typing import Any, Dict, List, Optional, cast
+from lmstudio import LMStudio
 from openai import OpenAI
 
 # API endpoints, model limits, and budgets shared by every agent run.
@@ -26,6 +27,24 @@ MARKET_SYMBOL_PATTERN = re.compile(
 )
 # Avoid turning a broad market question into an unbounded sequence of symbol searches.
 MAX_PREFLIGHT_SYMBOL_SEARCHES = 2
+QWEN_MODEL_NAME = "qwen3.6-27b"
+QWEN_MODEL_CONFIG = {
+    "contextLength": 131072,
+    "offloadKVCacheToGpu": True,
+    "flashAttention": True,
+    "llamaKCacheQuantizationType": "q8_0",
+    "llamaVCacheQuantizationType": "q8_0",
+    "gpu": {
+        "disabledGpus": [],
+        "ratio": 1.0,
+    },
+}
+
+
+def load_qwen_model() -> Any:
+    """Load Qwen with the required LM Studio KV-cache configuration."""
+    model = LMStudio().models.get(QWEN_MODEL_NAME)
+    return model.load(config=QWEN_MODEL_CONFIG)
 
 class FredAPIError(Exception):
     """Custom exception for FRED API errors."""
@@ -51,6 +70,7 @@ class LocalFREDAgent:
         self.activity_callback = activity_callback or (lambda _: None)
         self.chart_callback = chart_callback or (lambda _series_id, _observations: None)
         self.token_callback = token_callback or (lambda _usage: None)
+        self.model = load_qwen_model()
         # LM Studio exposes the locally loaded Qwen model through an OpenAI-compatible endpoint.
         self.client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
         self.tool_map: Dict[str, Any] = {}
@@ -523,7 +543,7 @@ class LocalFREDAgent:
         """Create a concise response compatible with LM Studio's Qwen template."""
         # Disable Qwen's hidden reasoning channel so the UI receives concise visible answers.
         return self.client.chat.completions.create(
-            model="qwen3.6-27b",
+            model=QWEN_MODEL_NAME,
             messages=cast(Any, messages),
             tools=cast(Any, self.openai_tools),
             max_tokens=MAX_COMPLETION_TOKENS,
