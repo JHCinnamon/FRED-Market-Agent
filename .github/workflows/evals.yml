@@ -47,14 +47,86 @@ jobs:
         shell: pwsh
         run: python -m pip install -r requirements.txt
 
-      - name: Run prompt evaluations
+      - name: Evaluate latest unemployment reading
         shell: pwsh
-        run: python evals/run_evals.py --output "$env:RUNNER_TEMP\fred-eval-results.json"
+        run: python evals/run_evals.py --case unemployment-latest-reading --output "$env:RUNNER_TEMP\unemployment-latest-reading.json"
 
-      - name: Upload evaluation report
+      - name: Upload unemployment evaluation report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fred-eval-results
-          path: ${{ runner.temp }}/fred-eval-results.json
+          name: fred-eval-unemployment-latest-reading
+          path: ${{ runner.temp }}/unemployment-latest-reading.json
+          if-no-files-found: warn
+
+      - name: Evaluate latest inflation reading
+        shell: pwsh
+        run: python evals/run_evals.py --case inflation-latest-reading --output "$env:RUNNER_TEMP\inflation-latest-reading.json"
+
+      - name: Upload inflation evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fred-eval-inflation-latest-reading
+          path: ${{ runner.temp }}/inflation-latest-reading.json
+          if-no-files-found: warn
+
+      - name: Evaluate latest market quote
+        shell: pwsh
+        run: python evals/run_evals.py --case market-quote --output "$env:RUNNER_TEMP\market-quote.json"
+
+      - name: Upload market quote evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fred-eval-market-quote
+          path: ${{ runner.temp }}/market-quote.json
+          if-no-files-found: warn
+
+      - name: Evaluate US market impact analysis
+        shell: pwsh
+        run: python evals/run_evals.py --case us-market-impact-analysis --output "$env:RUNNER_TEMP\us-market-impact-analysis.json"
+
+      - name: Upload US market impact evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fred-eval-us-market-impact-analysis
+          path: ${{ runner.temp }}/us-market-impact-analysis.json
+          if-no-files-found: warn
+
+      - name: Evaluate US-China market comparison follow-up
+        shell: pwsh
+        run: python evals/run_evals.py --case us-china-market-comparison-follow-up --output "$env:RUNNER_TEMP\us-china-market-comparison-follow-up.json"
+
+      - name: Upload US-China market comparison evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fred-eval-us-china-market-comparison-follow-up
+          path: ${{ runner.temp }}/us-china-market-comparison-follow-up.json
+          if-no-files-found: warn
+
+      - name: Evaluate weekly company crash screen
+        shell: pwsh
+        run: python evals/run_evals.py --case weekly-company-crash-screen --output "$env:RUNNER_TEMP\weekly-company-crash-screen.json"
+
+      - name: Upload weekly company crash evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fred-eval-weekly-company-crash-screen
+          path: ${{ runner.temp }}/weekly-company-crash-screen.json
+          if-no-files-found: warn
+
+      - name: Evaluate US-China economic delta
+        shell: pwsh
+        run: python evals/run_evals.py --case us-china-economic-delta --output "$env:RUNNER_TEMP\us-china-economic-delta.json"
+
+      - name: Upload US-China economic delta evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fred-eval-us-china-economic-delta
+          path: ${{ runner.temp }}/us-china-economic-delta.json
           if-no-files-found: warn

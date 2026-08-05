@@ -29,6 +29,11 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         help="Optional path for the JSON evaluation report.",
     )
+    parser.add_argument(
+        "--case",
+        dest="case_id",
+        help="Optional ID of one evaluation case to run.",
+    )
     return parser.parse_args()
 
 
@@ -122,9 +127,13 @@ async def run_case(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def run_suite(suite_path: Path) -> dict[str, Any]:
+async def run_suite(suite_path: Path, case_id: str | None = None) -> dict[str, Any]:
     suite = json.loads(suite_path.read_text(encoding="utf-8"))
     cases = suite.get("cases", [])
+    if case_id:
+        cases = [case for case in cases if case.get("id") == case_id]
+        if not cases:
+            raise ValueError(f"The evaluation suite has no case with ID: {case_id}")
     if not cases:
         raise ValueError("The evaluation suite has no cases.")
     results = [await run_case(case) for case in cases]
@@ -137,7 +146,7 @@ async def run_suite(suite_path: Path) -> dict[str, Any]:
 
 def main() -> int:
     arguments = parse_arguments()
-    report = asyncio.run(run_suite(arguments.suite))
+    report = asyncio.run(run_suite(arguments.suite, arguments.case_id))
     rendered_report = json.dumps(report, indent=2)
     print(rendered_report)
     if arguments.output:
