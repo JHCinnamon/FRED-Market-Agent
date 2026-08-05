@@ -18,6 +18,31 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v4
 
+      - name: Ensure LM Studio is running
+        shell: pwsh
+        run: |
+          $lmStudioProcess = Get-Process -Name "LM Studio" -ErrorAction SilentlyContinue
+          if ($lmStudioProcess) {
+            Write-Host "LM Studio is already running."
+            exit 0
+          }
+
+          $lmStudioExecutable = Join-Path $env:LOCALAPPDATA "Programs\LM Studio\LM Studio.exe"
+          if (-not (Test-Path -LiteralPath $lmStudioExecutable -PathType Leaf)) {
+            throw "LM Studio is not running and could not be found at: $lmStudioExecutable"
+          }
+
+          Start-Process -FilePath $lmStudioExecutable
+          $deadline = (Get-Date).AddSeconds(30)
+          do {
+            Start-Sleep -Seconds 1
+            $lmStudioProcess = Get-Process -Name "LM Studio" -ErrorAction SilentlyContinue
+          } until ($lmStudioProcess -or (Get-Date) -ge $deadline)
+
+          if (-not $lmStudioProcess) {
+            throw "LM Studio did not start within 30 seconds."
+          }
+
       - name: Install Python dependencies
         shell: pwsh
         run: python -m pip install -r requirements.txt
