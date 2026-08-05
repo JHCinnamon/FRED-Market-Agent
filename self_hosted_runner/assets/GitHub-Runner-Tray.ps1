@@ -25,6 +25,21 @@ if (-not (Test-Path -LiteralPath $iconPath -PathType Leaf)) {
     exit 1
 }
 
+$lmStudioProcess = Get-Process -Name "LM Studio" -ErrorAction SilentlyContinue
+if (-not $lmStudioProcess) {
+    $lmStudioExecutable = Join-Path $env:LOCALAPPDATA "Programs\LM Studio\LM Studio.exe"
+    if (-not (Test-Path -LiteralPath $lmStudioExecutable -PathType Leaf)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "LM Studio is not running and could not be found at:`n$lmStudioExecutable",
+            "GitHub Runner",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
+        exit 1
+    }
+    Start-Process -FilePath $lmStudioExecutable
+}
+
 $runnerProcess = Start-Process -FilePath $env:ComSpec -WorkingDirectory $runnerDirectory -ArgumentList "/k `"$runnerScript`"" -PassThru
 
 $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
