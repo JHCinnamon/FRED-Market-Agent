@@ -6,7 +6,7 @@ import os
 import re
 import requests
 from typing import Any, Dict, List, Optional, cast
-from lmstudio import LMStudio
+import lmstudio as lms
 from openai import OpenAI
 
 # API endpoints, model limits, and budgets shared by every agent run.
@@ -28,7 +28,7 @@ MARKET_SYMBOL_PATTERN = re.compile(
 # Avoid turning a broad market question into an unbounded sequence of symbol searches.
 MAX_PREFLIGHT_SYMBOL_SEARCHES = 2
 QWEN_MODEL_NAME = "qwen3.6-27b"
-QWEN_MODEL_CONFIG = {
+QWEN_MODEL_CONFIG: lms.LlmLoadModelConfigDict = {
     "contextLength": 131072,
     "offloadKVCacheToGpu": True,
     "flashAttention": True,
@@ -43,8 +43,7 @@ QWEN_MODEL_CONFIG = {
 
 def load_qwen_model() -> Any:
     """Load Qwen with the required LM Studio KV-cache configuration."""
-    model = LMStudio().models.get(QWEN_MODEL_NAME)
-    return model.load(config=QWEN_MODEL_CONFIG)
+    return lms.Client().llm.model(QWEN_MODEL_NAME, config=QWEN_MODEL_CONFIG)
 
 class FredAPIError(Exception):
     """Custom exception for FRED API errors."""
