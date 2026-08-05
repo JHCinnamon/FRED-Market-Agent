@@ -60,10 +60,10 @@ LM Studio must be serving the loaded model at `http://localhost:1234/v1`. Cases 
 
 ### Run evals from GitHub while this PC is online
 
-`.github/workflows/evals.yml` is a manually triggered GitHub Actions workflow that runs only on a self-hosted Windows runner with the `fred-evals` label. A self-hosted runner keeps an outbound connection to GitHub, so GitHub never needs a port opened into this PC. When the runner is offline, the workflow remains queued until it comes back online.
+`.github/workflows/evals.yml` is a manually triggered GitHub Actions workflow that runs only on a self-hosted Windows runner. A self-hosted runner keeps an outbound connection to GitHub, so GitHub never needs a port opened into this PC. When the runner is offline, the workflow remains queued until it comes back online.
 
 1. In the repository's GitHub settings, add `FRED_API_KEY` and optionally `TWELVE_DATA_API_KEY` as Actions secrets.
-2. In GitHub settings, add a self-hosted Windows runner on this PC and assign the custom label `fred-evals`. Use a dedicated account and repository-level runner where possible.
+2. In GitHub settings, add a self-hosted Windows runner on this PC. Use a dedicated account and repository-level runner where possible.
 3. Start LM Studio's local server before dispatching the workflow.
 4. In the GitHub Actions tab, select **Local Agent Evals** and choose **Run workflow**.
 
