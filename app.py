@@ -251,7 +251,7 @@ class FredAgentApp(tk.Tk):
         charts: Dict[str, List[Dict[str, Any]]] = {}
 
         async def execute() -> str:
-            agent = LocalFREDAgent(
+            agent = fred_agent.LocalFREDAgent(
                 api_key=self.api_key,
                 twelve_data_api_key=self.twelve_data_api_key,
                 activity_callback=self._queue_activity,
