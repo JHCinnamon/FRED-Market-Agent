@@ -32,8 +32,6 @@ QWEN_MODEL_CONFIG: lms.LlmLoadModelConfigDict = {
     "contextLength": 131072,
     "offloadKVCacheToGpu": True,
     "flashAttention": True,
-    "llamaKCacheQuantizationType": "q8_0",
-    "llamaVCacheQuantizationType": "q8_0",
     "gpu": {
         "disabledGpus": [],
         "ratio": 1.0,
@@ -42,7 +40,7 @@ QWEN_MODEL_CONFIG: lms.LlmLoadModelConfigDict = {
 
 
 def load_qwen_model() -> Any:
-    """Load Qwen with the required LM Studio KV-cache configuration."""
+    """Load Qwen with the supported LM Studio configuration."""
     return lms.Client().llm.model(QWEN_MODEL_NAME, config=QWEN_MODEL_CONFIG)
 
 class FredAPIError(Exception):

@@ -10,18 +10,18 @@ from fred_agent import LocalFREDAgent, QWEN_MODEL_CONFIG, QWEN_MODEL_NAME
 
 class QwenModelConfigurationTests(unittest.TestCase):
     @patch("fred_agent.lms.Client")
-    def test_agent_loads_qwen_with_q8_kv_cache_quantization(self, client: object) -> None:
+    def test_agent_loads_qwen_without_kv_cache_quantization(self, client: object) -> None:
         LocalFREDAgent()
 
         client.return_value.llm.model.assert_called_once_with(
             QWEN_MODEL_NAME, config=QWEN_MODEL_CONFIG
         )
         config = client.return_value.llm.model.call_args.kwargs["config"]
-        self.assertEqual("q8_0", config["llamaKCacheQuantizationType"])
-        self.assertEqual("q8_0", config["llamaVCacheQuantizationType"])
+        self.assertNotIn("llamaKCacheQuantizationType", config)
+        self.assertNotIn("llamaVCacheQuantizationType", config)
 
     @patch("fred_agent.lms.Client")
-    def test_evaluation_initialization_loads_qwen_with_q8_kv_cache_quantization(
+    def test_evaluation_initialization_loads_qwen_without_kv_cache_quantization(
         self, client: object
     ) -> None:
         with patch.object(LocalFREDAgent, "run", new=AsyncMock(return_value="complete")):
