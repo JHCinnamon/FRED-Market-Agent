@@ -533,10 +533,23 @@ class LocalFREDAgent:
         )
 
     def _create_final_completion(self, messages: List[Dict[str, Any]]):
-        """Request a final response without offering additional tools."""
+        """Request an evidence-grounded final response without offering additional tools."""
+        final_messages = [
+            *messages,
+            {
+                "role": "user",
+                "content": (
+                    "Now provide the final answer using the retrieved results already in this "
+                    "conversation. Do not request another tool or output tool-call syntax. Answer "
+                    "every part of the user's request with a natural-language analysis: explain "
+                    "the comparison or trend, connect the available evidence to the market question, "
+                    "and state material data gaps or release lags."
+                ),
+            },
+        ]
         return self.client.chat.completions.create(
             model=QWEN_MODEL_NAME,
-            messages=cast(Any, messages),
+            messages=cast(Any, self._truncate_messages(final_messages)),
             max_tokens=MAX_COMPLETION_TOKENS,
             extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         )
@@ -666,9 +679,12 @@ class LocalFREDAgent:
                     self.activity_callback("Unparsed tool call received, writing final response")
                     final_response = self._create_final_completion(messages)
                     final_answer = final_response.choices[0].message.content
-                    if final_answer:
+                    if final_answer and not self._is_textual_tool_call(final_answer):
                         return final_answer
-                    return "The local model did not produce a final response. Please submit the request again."
+                    return (
+                        "The local model did not produce a usable final analysis after retrieving "
+                        "data. Please submit the request again."
+                    )
                 finish_reason = response.choices[0].finish_reason
                 if finish_reason == "length":
                     return (
@@ -722,6 +738,6 @@ class LocalFREDAgent:
         self.activity_callback("Tool-call limit reached, writing final response")
         response = self._create_final_completion(messages)
         answer = response.choices[0].message.content
-        if answer:
+        if answer and not self._is_textual_tool_call(answer):
             return answer
-        return "The local model did not produce a final response. Please submit the request again."
+        return "The local model did not produce a usable final analysis. Please submit the request again."
