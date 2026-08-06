@@ -17,7 +17,7 @@ from fred_agent import LocalFREDAgent
 
 
 JUDGE_MODEL_NAME = "google/gemma-4-12b-qat"
-JUDGE_MAX_TOKENS = 512
+JUDGE_MAX_TOKENS = 1_024
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -53,7 +53,7 @@ def judge_relevance(agent: LocalFREDAgent, prompt: str, answer: str) -> dict[str
         ],
         max_tokens=JUDGE_MAX_TOKENS,
         temperature=0,
-        extra_body={"chat_template_kwargs": {"enable_thinking": True}},
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
     choice = response.choices[0]
     content = choice.message.content or ""
