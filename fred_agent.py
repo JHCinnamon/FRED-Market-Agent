@@ -19,7 +19,7 @@ REQUEST_TOKEN_BUDGET = 4_800
 HISTORY_TOKEN_BUDGET = 900
 TOOL_RESULT_CHAR_LIMIT = 8_000
 DEFAULT_OBSERVATION_LIMIT = 12
-MAX_TOOL_CALL_ROUNDS = 8
+MAX_TOOL_CALL_ROUNDS = 12
 MARKET_SYMBOL_PATTERN = re.compile(
     r"\b(?:S&P\s*500|NASDAQ(?:\s+COMPOSITE)?|DOW(?:\s+JONES)?|CSI\s*300)\b"
     r"|\$[A-Za-z]{1,5}\b|\b[A-Za-z]{3}/[A-Za-z]{3}\b",
@@ -557,7 +557,9 @@ class LocalFREDAgent:
     def _is_textual_tool_call(self, content: str) -> bool:
         """Detect tool-call markup a local model returned outside the API field."""
         normalized = content.lstrip().casefold()
-        return normalized.startswith(("<tool_call", "<function", "{" + '"name"'))
+        return normalized.startswith(
+            ("<tool_call", "<|tool_call", "<function", "<|function", "{" + '"name"')
+        )
 
     def _report_token_usage(self, response: Any, messages: List[Dict[str, Any]]) -> None:
         """Report server usage when available, otherwise a request-size estimate."""
@@ -627,7 +629,10 @@ class LocalFREDAgent:
                     "For common US indicators, use UNRATE, CPIAUCSL, PCEPI, GDPC1, and FEDFUNDS "
                     "directly instead of searching. For a multi-indicator economic report, retrieve "
                     "every requested series in one bounded batch with limit 12, then write the "
-                    "report from those results. Treat forecasts as uncertain estimates, state "
+                    "report from those results. For an international comparison, plan the needed "
+                    "series and market requests in the first one or two tool rounds, never repeat "
+                    "an identical successful search, and synthesize once the available evidence is "
+                    "returned. Treat forecasts as uncertain estimates, state "
                     "the data-release lag, and do not make additional searches unless a series "
                     "is unavailable. When a user requests a chart, graph, plot, or visualization, "
                     "retrieve the relevant series observations so the desktop application can "
@@ -655,6 +660,7 @@ class LocalFREDAgent:
         messages = self._truncate_messages(messages)
         self.activity_callback("Preparing the model request")
         
+        completed_tool_calls: set[tuple[str, str]] = set()
         for tool_call_round in range(MAX_TOOL_CALL_ROUNDS):
             # Each iteration is either a final answer or one structured tool-call round.
             try:
@@ -695,6 +701,24 @@ class LocalFREDAgent:
                 return "The local model returned no visible answer. Please submit the request again."
 
             self.activity_callback("Reviewing tool requests")
+
+            tool_request_keys = {
+                (
+                    cast(Any, call).function.name,
+                    cast(Any, call).function.arguments,
+                )
+                for call in tool_calls
+            }
+            if tool_request_keys.issubset(completed_tool_calls):
+                self.activity_callback("Repeated tool request received, writing final response")
+                final_response = self._create_final_completion(messages)
+                final_answer = final_response.choices[0].message.content
+                if final_answer and not self._is_textual_tool_call(final_answer):
+                    return final_answer
+                return (
+                    "The local model did not produce a usable final analysis after retrieving "
+                    "the available data. Please submit the request again."
+                )
             
             # Preserve the assistant tool-call envelope so following tool results retain their call IDs.
             messages.append({
@@ -717,6 +741,9 @@ class LocalFREDAgent:
                 # Return tool errors to Qwen as data, allowing it to recover in its final response.
                 tool_name = cast(Any, call).function.name
                 arguments = json.loads(cast(Any, call).function.arguments)
+                completed_tool_calls.add(
+                    (tool_name, cast(Any, call).function.arguments)
+                )
                 self.activity_callback(f"Retrieving data with {tool_name}")
                 try:
                     tool_result = await self.call_tool(tool_name, arguments)
