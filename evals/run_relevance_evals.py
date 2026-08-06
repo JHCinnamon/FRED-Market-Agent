@@ -17,7 +17,7 @@ from fred_agent import LocalFREDAgent
 
 
 JUDGE_MODEL_NAME = "google/gemma-4-12b-qat"
-JUDGE_MAX_TOKENS = 4_096
+JUDGE_MAX_TOKENS = 8_192
 
 
 def parse_arguments() -> argparse.Namespace:
