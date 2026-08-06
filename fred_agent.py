@@ -534,19 +534,14 @@ class LocalFREDAgent:
 
     def _create_final_completion(self, messages: List[Dict[str, Any]]):
         """Request an evidence-grounded final response without offering additional tools."""
-        final_messages = [
-            *messages,
-            {
-                "role": "user",
-                "content": (
-                    "Now provide the final answer using the retrieved results already in this "
-                    "conversation. Do not request another tool or output tool-call syntax. Answer "
-                    "every part of the user's request with a natural-language analysis: explain "
-                    "the comparison or trend, connect the available evidence to the market question, "
-                    "and state material data gaps or release lags."
-                ),
-            },
-        ]
+        final_messages = [dict(message) for message in messages]
+        system_message = final_messages[0]
+        system_message["content"] += (
+            " Finalize now using the retrieved results already in this conversation. Do not request "
+            "another tool or output tool-call syntax. Answer every part of the user's request with "
+            "a natural-language analysis: explain the comparison or trend, connect the available "
+            "evidence to the market question, and state material data gaps or release lags."
+        )
         return self.client.chat.completions.create(
             model=QWEN_MODEL_NAME,
             messages=cast(Any, self._truncate_messages(final_messages)),
