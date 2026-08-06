@@ -56,7 +56,7 @@ jobs:
             }
           } until ((Get-Date) -ge $apiDeadline)
 
-          throw "LM Studio is running, but its local API was not ready at $apiUri after 90 seconds. Start the local server and load google/gemma-4-12b-qat in LM Studio before running this workflow."
+          throw "LM Studio is running, but its local API was not ready at $apiUri after 90 seconds. Start the local server and load qwen/qwen3.6-27b in LM Studio before running this workflow."
 
       - name: Install Python dependencies
         shell: pwsh

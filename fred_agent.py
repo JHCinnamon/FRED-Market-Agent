@@ -29,7 +29,7 @@ MARKET_SYMBOL_PATTERN = re.compile(
 )
 # Avoid turning a broad market question into an unbounded sequence of symbol searches.
 MAX_PREFLIGHT_SYMBOL_SEARCHES = 2
-QWEN_MODEL_NAME = "google/gemma-4-12b-qat"  ##"qwen/qwen3.6-27b" ##(too large for 32 GB SYSRAM)
+QWEN_MODEL_NAME = "qwen/qwen3.6-27b"
 
 class FredAPIError(Exception):
     """Custom exception for FRED API errors."""
