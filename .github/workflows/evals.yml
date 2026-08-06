@@ -12,6 +12,8 @@ jobs:
     runs-on: [self-hosted, Windows]
     timeout-minutes: 90
     env:
+      ACTIONS_RUNNER_DEBUG: true
+      ACTIONS_STEP_DEBUG: true
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
     steps:
