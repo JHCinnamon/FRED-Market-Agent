@@ -19,6 +19,7 @@ REQUEST_TOKEN_BUDGET = 4_800
 HISTORY_TOKEN_BUDGET = 900
 TOOL_RESULT_CHAR_LIMIT = 8_000
 DEFAULT_OBSERVATION_LIMIT = 12
+MAX_TOOL_CALL_ROUNDS = 8
 MARKET_SYMBOL_PATTERN = re.compile(
     r"\b(?:S&P\s*500|NASDAQ(?:\s+COMPOSITE)?|DOW(?:\s+JONES)?|CSI\s*300)\b"
     r"|\$[A-Za-z]{1,5}\b|\b[A-Za-z]{3}/[A-Za-z]{3}\b",
@@ -26,6 +27,7 @@ MARKET_SYMBOL_PATTERN = re.compile(
 )
 # Avoid turning a broad market question into an unbounded sequence of symbol searches.
 MAX_PREFLIGHT_SYMBOL_SEARCHES = 2
+QWEN_MODEL_NAME = "google/gemma-4-12b-qat"  ##"qwen/qwen3.6-27b" ##(too large for 32 GB SYSRAM)
 
 class FredAPIError(Exception):
     """Custom exception for FRED API errors."""
@@ -523,9 +525,18 @@ class LocalFREDAgent:
         """Create a concise response compatible with LM Studio's Qwen template."""
         # Disable Qwen's hidden reasoning channel so the UI receives concise visible answers.
         return self.client.chat.completions.create(
-            model="qwen3.6-27b",
+            model=QWEN_MODEL_NAME,
             messages=cast(Any, messages),
             tools=cast(Any, self.openai_tools),
+            max_tokens=MAX_COMPLETION_TOKENS,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+
+    def _create_final_completion(self, messages: List[Dict[str, Any]]):
+        """Request a final response without offering additional tools."""
+        return self.client.chat.completions.create(
+            model=QWEN_MODEL_NAME,
+            messages=cast(Any, messages),
             max_tokens=MAX_COMPLETION_TOKENS,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
@@ -611,7 +622,7 @@ class LocalFREDAgent:
         messages = self._truncate_messages(messages)
         self.activity_callback("Preparing the model request")
         
-        while True:
+        for tool_call_round in range(MAX_TOOL_CALL_ROUNDS):
             # Each iteration is either a final answer or one structured tool-call round.
             try:
                 response = self._create_completion(messages)
@@ -680,3 +691,10 @@ class LocalFREDAgent:
                 
             messages = self._truncate_messages(messages)
             self.activity_callback("Synthesizing the final response")
+
+        self.activity_callback("Tool-call limit reached, writing final response")
+        response = self._create_final_completion(messages)
+        answer = response.choices[0].message.content
+        if answer:
+            return answer
+        return "The local model did not produce a final response. Please submit the request again."
