@@ -12,6 +12,8 @@ jobs:
     runs-on: [self-hosted, Windows]
     timeout-minutes: 30
     env:
+      ACTIONS_RUNNER_DEBUG: true
+      ACTIONS_STEP_DEBUG: true
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
     steps:
@@ -50,6 +52,17 @@ jobs:
       - name: Run prompt evaluations
         shell: pwsh
         run: python evals/run_evals.py --output "$env:RUNNER_TEMP\fred-eval-results.json"
+
+      - name: Display evaluation report
+        if: always()
+        shell: pwsh
+        run: |
+          $reportPath = Join-Path $env:RUNNER_TEMP "fred-eval-results.json"
+          if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
+            Get-Content -LiteralPath $reportPath -Raw
+          } else {
+            Write-Warning "Evaluation report was not created."
+          }
 
       - name: Upload evaluation report
         if: always()
