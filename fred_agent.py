@@ -529,7 +529,7 @@ class LocalFREDAgent:
             messages=cast(Any, messages),
             tools=cast(Any, self.openai_tools),
             max_tokens=MAX_COMPLETION_TOKENS,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         )
 
     def _create_final_completion(self, messages: List[Dict[str, Any]]):
@@ -538,7 +538,7 @@ class LocalFREDAgent:
             model=QWEN_MODEL_NAME,
             messages=cast(Any, messages),
             max_tokens=MAX_COMPLETION_TOKENS,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         )
 
     def _report_token_usage(self, response: Any, messages: List[Dict[str, Any]]) -> None:

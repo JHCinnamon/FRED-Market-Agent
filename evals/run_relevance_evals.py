@@ -52,7 +52,7 @@ def judge_relevance(agent: LocalFREDAgent, prompt: str, answer: str) -> dict[str
             },
         ],
         max_tokens=JUDGE_MAX_TOKENS,
-        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        extra_body={"chat_template_kwargs": {"enable_thinking": True}},
     )
     choice = response.choices[0]
     content = choice.message.content or ""
