@@ -17,6 +17,7 @@ from fred_agent import LocalFREDAgent
 
 
 JUDGE_MODEL_NAME = "google/gemma-4-12b-qat"
+JUDGE_MAX_TOKENS = 512
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -50,13 +51,20 @@ def judge_relevance(agent: LocalFREDAgent, prompt: str, answer: str) -> dict[str
                 "content": f"Prompt:\n---\n{prompt}\n---\n\nAnswer:\n---\n{answer}\n---",
             },
         ],
-        max_tokens=200,
+        max_tokens=JUDGE_MAX_TOKENS,
         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
-    content = response.choices[0].message.content or ""
+    choice = response.choices[0]
+    content = choice.message.content or ""
     lines = [line.strip() for line in content.splitlines() if line.strip()]
     if not lines:
-        raise ValueError("The relevance judge returned an empty verdict.")
+        usage = getattr(response, "usage", None)
+        details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(details, "reasoning_tokens", None)
+        raise ValueError(
+            "The relevance judge returned an empty verdict "
+            f"(finish_reason={choice.finish_reason!r}, reasoning_tokens={reasoning_tokens!r})."
+        )
 
     first_line = lines[0].strip("`* ").casefold()
     verdict_match = re.fullmatch(r"(?:verdict\s*:\s*)?(pass|fail)[.:]?", first_line)
