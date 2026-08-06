@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from fred_agent import LocalFREDAgent
 
 
-JUDGE_MODEL_NAME = "google/gemma-4-12b-qat"
+JUDGE_MODEL_NAME = "google/gemma-4-e4b"
 JUDGE_MAX_TOKENS = 8_192
 
 
@@ -62,7 +62,7 @@ def judge_relevance(agent: LocalFREDAgent, prompt: str, answer: str) -> dict[str
         ],
         max_tokens=JUDGE_MAX_TOKENS,
         temperature=0,
-        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        extra_body={"chat_template_kwargs": {"enable_thinking": True}},
     )
     choice = response.choices[0]
     content = choice.message.content or ""
