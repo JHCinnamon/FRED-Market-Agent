@@ -10,126 +10,51 @@ jobs:
   evaluate:
     name: Run prompts on the local model
     runs-on: [self-hosted, Windows]
-    timeout-minutes: 90
+    timeout-minutes: 30
     env:
-      ACTIONS_RUNNER_DEBUG: true
-      ACTIONS_STEP_DEBUG: true
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
 
-      - name: Ensure the LM Studio API is ready
+      - name: Ensure LM Studio is running
         shell: pwsh
         run: |
           $lmStudioProcess = Get-Process -Name "LM Studio" -ErrorAction SilentlyContinue
           if ($lmStudioProcess) {
             Write-Host "LM Studio is already running."
-          } else {
-            $lmStudioExecutable = Join-Path $env:LOCALAPPDATA "Programs\LM Studio\LM Studio.exe"
-            if (-not (Test-Path -LiteralPath $lmStudioExecutable -PathType Leaf)) {
-              throw "LM Studio is not running and could not be found at: $lmStudioExecutable"
-            }
-
-            Start-Process -FilePath $lmStudioExecutable
-            $processDeadline = (Get-Date).AddSeconds(30)
-            do {
-              Start-Sleep -Seconds 1
-              $lmStudioProcess = Get-Process -Name "LM Studio" -ErrorAction SilentlyContinue
-            } until ($lmStudioProcess -or (Get-Date) -ge $processDeadline)
-
-            if (-not $lmStudioProcess) {
-              throw "LM Studio did not start within 30 seconds."
-            }
+            exit 0
           }
 
-          $apiUri = "http://localhost:1234/v1/models"
-          $apiDeadline = (Get-Date).AddSeconds(90)
-          do {
-            try {
-              Invoke-RestMethod -Uri $apiUri -TimeoutSec 5 -ErrorAction Stop | Out-Null
-              Write-Host "LM Studio local API is ready."
-              exit 0
-            } catch {
-              Start-Sleep -Seconds 2
-            }
-          } until ((Get-Date) -ge $apiDeadline)
+          $lmStudioExecutable = Join-Path $env:LOCALAPPDATA "Programs\LM Studio\LM Studio.exe"
+          if (-not (Test-Path -LiteralPath $lmStudioExecutable -PathType Leaf)) {
+            throw "LM Studio is not running and could not be found at: $lmStudioExecutable"
+          }
 
-          throw "LM Studio is running, but its local API was not ready at $apiUri after 90 seconds. Start the local server and load qwen/qwen3.6-27b in LM Studio before running this workflow."
+          Start-Process -FilePath $lmStudioExecutable
+          $deadline = (Get-Date).AddSeconds(30)
+          do {
+            Start-Sleep -Seconds 1
+            $lmStudioProcess = Get-Process -Name "LM Studio" -ErrorAction SilentlyContinue
+          } until ($lmStudioProcess -or (Get-Date) -ge $deadline)
+
+          if (-not $lmStudioProcess) {
+            throw "LM Studio did not start within 30 seconds."
+          }
 
       - name: Install Python dependencies
         shell: pwsh
         run: python -m pip install -r requirements.txt
 
-      - name: Evaluate latest unemployment reading
+      - name: Run prompt evaluations
         shell: pwsh
-        run: python evals/run_evals.py --case unemployment-latest-reading --output "$env:RUNNER_TEMP\unemployment-latest-reading.json"
+        run: python evals/run_evals.py --output "$env:RUNNER_TEMP\fred-eval-results.json"
 
-      - name: Upload unemployment evaluation report
+      - name: Upload evaluation report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fred-eval-unemployment-latest-reading
-          path: ${{ runner.temp }}/unemployment-latest-reading.json
-          if-no-files-found: warn
-
-      - name: Evaluate latest inflation reading
-        shell: pwsh
-        run: python evals/run_evals.py --case inflation-latest-reading --output "$env:RUNNER_TEMP\inflation-latest-reading.json"
-
-      - name: Upload inflation evaluation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fred-eval-inflation-latest-reading
-          path: ${{ runner.temp }}/inflation-latest-reading.json
-          if-no-files-found: warn
-
-      - name: Evaluate latest market quote
-        shell: pwsh
-        run: python evals/run_evals.py --case market-quote --output "$env:RUNNER_TEMP\market-quote.json"
-
-      - name: Upload market quote evaluation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fred-eval-market-quote
-          path: ${{ runner.temp }}/market-quote.json
-          if-no-files-found: warn
-
-      - name: Evaluate US market impact analysis
-        shell: pwsh
-        run: python evals/run_evals.py --case us-market-impact-analysis --output "$env:RUNNER_TEMP\us-market-impact-analysis.json"
-
-      - name: Upload US market impact evaluation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fred-eval-us-market-impact-analysis
-          path: ${{ runner.temp }}/us-market-impact-analysis.json
-          if-no-files-found: warn
-
-      - name: Evaluate weekly company crash screen
-        shell: pwsh
-        run: python evals/run_evals.py --case weekly-company-crash-screen --output "$env:RUNNER_TEMP\weekly-company-crash-screen.json"
-
-      - name: Upload weekly company crash evaluation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fred-eval-weekly-company-crash-screen
-          path: ${{ runner.temp }}/weekly-company-crash-screen.json
-          if-no-files-found: warn
-
-      - name: Evaluate US-China economic delta
-        shell: pwsh
-        run: python evals/run_evals.py --case us-china-economic-delta --output "$env:RUNNER_TEMP\us-china-economic-delta.json"
-
-      - name: Upload US-China economic delta evaluation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fred-eval-us-china-economic-delta
-          path: ${{ runner.temp }}/us-china-economic-delta.json
+          name: fred-eval-results
+          path: ${{ runner.temp }}/fred-eval-results.json
           if-no-files-found: warn

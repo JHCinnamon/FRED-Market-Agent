@@ -48,7 +48,7 @@ While the model is working, the small status strip shows the active agent phase 
 
 ## Prompt evaluations
 
-The repository includes black-box prompt evaluations in `evals/prompts.json`. Each case contains only the prompt, plus an optional conversational follow-up. The runner sends the prompt through `LocalFREDAgent`, then uses the local model as an LLM-as-a-judge to determine whether each response is relevant to its prompt and emits a JSON report:
+The repository includes black-box prompt evaluations in `evals/prompts.json`. The runner sends each prompt through `LocalFREDAgent`, validates its response and observed tool behavior, and emits a JSON report:
 
 ```powershell
 $env:FRED_API_KEY = "your-fred-key"
@@ -56,7 +56,7 @@ $env:TWELVE_DATA_API_KEY = "your-twelve-data-key" # Optional; enables market cas
 python evals/run_evals.py --output eval-results.json
 ```
 
-LM Studio must be serving the loaded model at `http://localhost:1234/v1`. Failed relevance judgments cause the command to exit with status 1. Add or tune prompts in `evals/prompts.json` as the agent changes.
+LM Studio must be serving the loaded model at `http://localhost:1234/v1`. Cases that need an API key which is not configured are reported as skipped; failed cases cause the command to exit with status 1. Add or tune prompt checks in `evals/prompts.json` as the agent changes.
 
 ### Run evals from GitHub while this PC is online
 
@@ -67,7 +67,7 @@ LM Studio must be serving the loaded model at `http://localhost:1234/v1`. Failed
 3. Start LM Studio's local server before dispatching the workflow.
 4. In the GitHub Actions tab, select **Local Agent Evals** and choose **Run workflow**.
 
-The workflow checks out this repository onto the configured runner, installs the declared Python dependencies, runs each evaluation case in an isolated process, and uploads a separate report artifact after every case. The US-China market comparison is a follow-up that receives the generated response from the US market-impact turn; the US-China economic-delta case starts a separate conversation. It has access only to what that runner account can access and does not expose remote desktop, shell, or a network service.
+The workflow checks out this repository onto the configured runner, installs the declared Python dependencies, writes an `fred-eval-results` artifact, and has access only to what that runner account can access. It does not expose remote desktop, shell, or a network service.
 
 ## Troubleshooting
 

@@ -2,28 +2,73 @@
   "cases": [
     {
       "id": "unemployment-latest-reading",
-      "prompt": "Retrieve the latest US unemployment rate. State the observation date, identify FRED as the source, and briefly explain the latest movement."
+      "prompt": "Retrieve the latest US unemployment rate. State the observation date, identify FRED as the source, and briefly explain the latest movement.",
+      "requires": ["fred"],
+      "min_response_characters": 80,
+      "contains_any": ["unemployment", "unemploy"],
+      "required_chart_series": ["UNRATE"]
     },
     {
       "id": "inflation-latest-reading",
-      "prompt": "Retrieve the latest CPI reading for the United States. Identify FRED as the source, state the observation date, and distinguish the index level from an inflation rate."
+      "prompt": "Retrieve the latest CPI reading for the United States. Identify FRED as the source, state the observation date, and distinguish the index level from an inflation rate.",
+      "requires": ["fred"],
+      "min_response_characters": 100,
+      "contains_any": ["consumer price", "cpi", "inflation"],
+      "required_chart_series": ["CPIAUCSL"]
     },
     {
       "id": "market-quote",
-      "prompt": "Retrieve the latest quote for AAPL. Identify the source, state the quote timestamp or date when available, and note whether the market is open."
+      "prompt": "Retrieve the latest quote for AAPL. Identify the source, state the quote timestamp or date when available, and note whether the market is open.",
+      "requires": ["twelve_data"],
+      "min_response_characters": 80,
+      "contains_all": ["AAPL"],
+      "contains_any": ["Twelve Data", "market"],
+      "required_activity_prefixes": ["Getting market quote"]
     },
     {
       "id": "us-market-impact-analysis",
       "prompt": "How do last month's unemployment, CPI, GDP, interest rates, and market trend reports affect the stock exchange, and which companies or industries are the biggest winners from these fluctuations? Use current source data, identify material data-release lags, and do not make causal claims beyond the available evidence.",
-      "follow_up_prompt": "How does this compare to China? Use the CSI 300 and FRED metrics relating to China's region from the last month for comparison as well. State any material gaps or release lags in the available data."
+      "requires": ["fred", "twelve_data"],
+      "min_response_characters": 300,
+      "contains_any": ["unemployment", "cpi", "inflation", "gdp"],
+      "required_chart_series": ["UNRATE", "CPIAUCSL", "GDPC1"]
+    },
+    {
+      "id": "us-china-market-comparison-follow-up",
+      "conversation": [
+        {
+          "role": "user",
+          "content": "How do last month's unemployment, CPI, GDP, interest rates, and market trend reports affect the stock exchange, and which companies or industries are the biggest winners from these fluctuations?"
+        },
+        {
+          "role": "assistant",
+          "content": "I will use current economic and market data to assess the US conditions and their limits."
+        },
+        {
+          "role": "user",
+          "content": "How does this compare to China? Use the CSI 300 and FRED metrics relating to China's region from the last month for comparison as well. State any material gaps or release lags in the available data."
+        }
+      ],
+      "requires": ["fred", "twelve_data"],
+      "min_response_characters": 250,
+      "contains_all": ["China"],
+      "contains_any": ["CSI 300", "CSI300"],
+      "required_activity_prefixes": ["Searching market symbols"]
     },
     {
       "id": "weekly-company-crash-screen",
-      "prompt": "Did any companies crash this week? Use current market data, define a meaningful threshold for a crash, identify the observation period, and distinguish broad market moves from company-specific moves."
+      "prompt": "Did any companies crash this week? Use current market data, define a meaningful threshold for a crash, identify the observation period, and distinguish broad market moves from company-specific moves.",
+      "requires": ["twelve_data"],
+      "min_response_characters": 180,
+      "contains_any": ["company", "stock", "market", "data"]
     },
     {
       "id": "us-china-economic-delta",
-      "prompt": "In relation to GDP, unemployment rates, and inflation, who had the worse delta: the US or China? Retrieve available FRED metrics for both regions, compare like-for-like periods where possible, and state where release timing or methodology makes the comparison uncertain."
+      "prompt": "In relation to GDP, unemployment rates, and inflation, who had the worse delta: the US or China? Retrieve available FRED metrics for both regions, compare like-for-like periods where possible, and state where release timing or methodology makes the comparison uncertain.",
+      "requires": ["fred"],
+      "min_response_characters": 250,
+      "contains_all": ["US", "China"],
+      "contains_any": ["GDP", "unemployment", "inflation"]
     }
   ]
 }
