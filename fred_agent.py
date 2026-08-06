@@ -19,6 +19,7 @@ REQUEST_TOKEN_BUDGET = 4_800
 HISTORY_TOKEN_BUDGET = 900
 TOOL_RESULT_CHAR_LIMIT = 8_000
 DEFAULT_OBSERVATION_LIMIT = 12
+MAX_TOOL_CALL_ROUNDS = 8
 MARKET_SYMBOL_PATTERN = re.compile(
     r"\b(?:S&P\s*500|NASDAQ(?:\s+COMPOSITE)?|DOW(?:\s+JONES)?|CSI\s*300)\b"
     r"|\$[A-Za-z]{1,5}\b|\b[A-Za-z]{3}/[A-Za-z]{3}\b",
@@ -612,7 +613,7 @@ class LocalFREDAgent:
         messages = self._truncate_messages(messages)
         self.activity_callback("Preparing the model request")
         
-        while True:
+        for tool_call_round in range(MAX_TOOL_CALL_ROUNDS):
             # Each iteration is either a final answer or one structured tool-call round.
             try:
                 response = self._create_completion(messages)
@@ -681,3 +682,7 @@ class LocalFREDAgent:
                 
             messages = self._truncate_messages(messages)
             self.activity_callback("Synthesizing the final response")
+
+        raise RuntimeError(
+            f"The local model exceeded the {MAX_TOOL_CALL_ROUNDS}-round tool-call limit."
+        )

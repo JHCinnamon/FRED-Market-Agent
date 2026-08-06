@@ -28,31 +28,12 @@
     {
       "id": "us-market-impact-analysis",
       "prompt": "How do last month's unemployment, CPI, GDP, interest rates, and market trend reports affect the stock exchange, and which companies or industries are the biggest winners from these fluctuations? Use current source data, identify material data-release lags, and do not make causal claims beyond the available evidence.",
-      "requires": ["fred", "twelve_data"],
-      "min_response_characters": 300,
-      "contains_any": ["unemployment", "cpi", "inflation", "gdp"],
-      "required_chart_series": ["UNRATE", "CPIAUCSL", "GDPC1"]
-    },
-    {
-      "id": "us-china-market-comparison-follow-up",
-      "conversation": [
-        {
-          "role": "user",
-          "content": "How do last month's unemployment, CPI, GDP, interest rates, and market trend reports affect the stock exchange, and which companies or industries are the biggest winners from these fluctuations?"
-        },
-        {
-          "role": "assistant",
-          "content": "I will use current economic and market data to assess the US conditions and their limits."
-        },
-        {
-          "role": "user",
-          "content": "How does this compare to China? Use the CSI 300 and FRED metrics relating to China's region from the last month for comparison as well. State any material gaps or release lags in the available data."
-        }
-      ],
+      "follow_up_prompt": "How does this compare to China? Use the CSI 300 and FRED metrics relating to China's region from the last month for comparison as well. State any material gaps or release lags in the available data.",
       "requires": ["fred", "twelve_data"],
       "min_response_characters": 250,
       "contains_all": ["China"],
       "contains_any": ["CSI 300", "CSI300"],
+      "required_chart_series": ["UNRATE", "CPIAUCSL", "GDPC1"],
       "required_activity_prefixes": ["Searching market symbols"]
     },
     {

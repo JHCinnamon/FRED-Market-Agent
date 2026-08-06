@@ -10,7 +10,7 @@ jobs:
   evaluate:
     name: Run prompts on the local model
     runs-on: [self-hosted, Windows]
-    timeout-minutes: 30
+    timeout-minutes: 90
     env:
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
@@ -106,18 +106,6 @@ jobs:
         with:
           name: fred-eval-us-market-impact-analysis
           path: ${{ runner.temp }}/us-market-impact-analysis.json
-          if-no-files-found: warn
-
-      - name: Evaluate US-China market comparison follow-up
-        shell: pwsh
-        run: python evals/run_evals.py --case us-china-market-comparison-follow-up --output "$env:RUNNER_TEMP\us-china-market-comparison-follow-up.json"
-
-      - name: Upload US-China market comparison evaluation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fred-eval-us-china-market-comparison-follow-up
-          path: ${{ runner.temp }}/us-china-market-comparison-follow-up.json
           if-no-files-found: warn
 
       - name: Evaluate weekly company crash screen

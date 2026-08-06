@@ -67,7 +67,7 @@ LM Studio must be serving the loaded model at `http://localhost:1234/v1`. Cases 
 3. Start LM Studio's local server before dispatching the workflow.
 4. In the GitHub Actions tab, select **Local Agent Evals** and choose **Run workflow**.
 
-The workflow checks out this repository onto the configured runner, installs the declared Python dependencies, runs each prompt evaluation in an isolated process, and uploads a separate report artifact after every case. It has access only to what that runner account can access and does not expose remote desktop, shell, or a network service.
+The workflow checks out this repository onto the configured runner, installs the declared Python dependencies, runs each evaluation case in an isolated process, and uploads a separate report artifact after every case. The US-China market comparison is a follow-up that receives the generated response from the US market-impact turn; the US-China economic-delta case starts a separate conversation. It has access only to what that runner account can access and does not expose remote desktop, shell, or a network service.
 
 ## Troubleshooting
 

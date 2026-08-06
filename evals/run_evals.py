@@ -106,6 +106,14 @@ async def run_case(case: dict[str, Any]) -> dict[str, Any]:
     started_at = time.monotonic()
     try:
         answer = await agent.run(conversation)
+        follow_up_prompt = case.get("follow_up_prompt")
+        if follow_up_prompt:
+            conversation = [
+                *conversation,
+                {"role": "assistant", "content": answer},
+                {"role": "user", "content": follow_up_prompt},
+            ]
+            answer = await agent.run(conversation)
     except Exception as error:
         return {
             "id": case["id"],
