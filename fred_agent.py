@@ -541,7 +541,11 @@ class LocalFREDAgent:
             extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         )
 
-    def _create_final_completion(self, messages: List[Dict[str, Any]]):
+    def _create_final_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        recovery: bool = False,
+    ):
         """Request an evidence-grounded final response without offering additional tools."""
         final_messages = [dict(message) for message in messages]
         system_message = final_messages[0]
@@ -551,6 +555,13 @@ class LocalFREDAgent:
             "a natural-language analysis: explain the comparison or trend, connect the available "
             "evidence to the market question, and state material data gaps or release lags."
         )
+        if recovery:
+            system_message["content"] += (
+                " This is the final response attempt. Do not ask permission to use tools and do not "
+                "describe a retrieval plan. Use every available result now; when a requested metric "
+                "is unavailable, state that limitation as a caveat and still provide the comparison "
+                "or market interpretation supported by the retrieved evidence."
+            )
         return self.client.chat.completions.create(
             model=QWEN_MODEL_NAME,
             messages=cast(
@@ -571,6 +582,18 @@ class LocalFREDAgent:
         return normalized.startswith(
             ("<tool_call", "<|tool_call", "<function", "<|function", "{" + '"name"')
         )
+
+    def _finalize_answer(self, messages: List[Dict[str, Any]]) -> Optional[str]:
+        """Return a usable no-tools synthesis, with one strict recovery attempt."""
+        for recovery in (False, True):
+            response = self._create_final_completion(messages, recovery=recovery)
+            answer = response.choices[0].message.content
+            if answer and not self._is_textual_tool_call(answer):
+                return answer
+            if not recovery:
+                state = "tool markup" if answer else "no visible content"
+                self.activity_callback(f"Final synthesis returned {state}; retrying without tools")
+        return None
 
     def _report_token_usage(self, response: Any, messages: List[Dict[str, Any]]) -> None:
         """Report server usage when available, otherwise a request-size estimate."""
@@ -694,9 +717,8 @@ class LocalFREDAgent:
                     return assistant_message.content
                 if assistant_message.content:
                     self.activity_callback("Unparsed tool call received, writing final response")
-                    final_response = self._create_final_completion(messages)
-                    final_answer = final_response.choices[0].message.content
-                    if final_answer and not self._is_textual_tool_call(final_answer):
+                    final_answer = self._finalize_answer(messages)
+                    if final_answer:
                         return final_answer
                     return (
                         "The local model did not produce a usable final analysis after retrieving "
@@ -722,9 +744,8 @@ class LocalFREDAgent:
             }
             if tool_request_keys.issubset(completed_tool_calls):
                 self.activity_callback("Repeated tool request received, writing final response")
-                final_response = self._create_final_completion(messages)
-                final_answer = final_response.choices[0].message.content
-                if final_answer and not self._is_textual_tool_call(final_answer):
+                final_answer = self._finalize_answer(messages)
+                if final_answer:
                     return final_answer
                 return (
                     "The local model did not produce a usable final analysis after retrieving "
@@ -774,8 +795,7 @@ class LocalFREDAgent:
             self.activity_callback("Synthesizing the final response")
 
         self.activity_callback("Tool-call limit reached, writing final response")
-        response = self._create_final_completion(messages)
-        answer = response.choices[0].message.content
-        if answer and not self._is_textual_tool_call(answer):
+        answer = self._finalize_answer(messages)
+        if answer:
             return answer
         return "The local model did not produce a usable final analysis. Please submit the request again."
