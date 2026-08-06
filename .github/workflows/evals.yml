@@ -51,7 +51,23 @@ jobs:
 
       - name: Run prompt evaluations
         shell: pwsh
-        run: python evals/run_evals.py --output "$env:RUNNER_TEMP\fred-eval-results.json"
+        run: |
+          $reportPath = Join-Path $env:RUNNER_TEMP "fred-eval-results.json"
+          & python evals/run_evals.py --output $reportPath
+          $evaluationExitCode = $LASTEXITCODE
+
+          if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
+            $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+            foreach ($result in $report.results | Where-Object { $_.status -eq "failed" }) {
+              Write-Host "::error title=Evaluation failed: $($result.id)::$($result.reason)"
+              Write-Host "Failed prompt: $($result.id)"
+              Write-Host "Reason: $($result.reason)"
+            }
+          } else {
+            Write-Host "::error title=Evaluation report missing::The evaluator did not create $reportPath."
+          }
+
+          exit $evaluationExitCode
 
       - name: Display evaluation report
         if: always()
