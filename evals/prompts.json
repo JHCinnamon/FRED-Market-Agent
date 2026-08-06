@@ -2,11 +2,11 @@
   "cases": [
     {
       "id": "unemployment-latest-reading",
-      "prompt": "Retrieve the latest US unemployment rate. State the observation date, identify FRED as the source, and briefly explain the latest movement."
+      "prompt": "Retrieve the latest available published US unemployment-rate observation from FRED. State its observation date, identify FRED as the source, and briefly explain the movement from the prior monthly observation."
     },
     {
       "id": "inflation-latest-reading",
-      "prompt": "Retrieve the latest CPI reading for the United States. Identify FRED as the source, state the observation date, and distinguish the index level from an inflation rate."
+      "prompt": "Retrieve the latest available published US CPI observation from FRED. State its observation date, identify FRED as the source, and distinguish the monthly index level from an inflation rate. Do not assume a newer monthly observation exists before its release."
     },
     {
       "id": "market-quote",
@@ -14,8 +14,8 @@
     },
     {
       "id": "us-market-impact-analysis",
-      "prompt": "How do last month's unemployment, CPI, GDP, interest rates, and market trend reports affect the stock exchange, and which companies or industries are the biggest winners from these fluctuations? Use current source data, identify material data-release lags, and do not make causal claims beyond the available evidence.",
-      "follow_up_prompt": "Compare the prior US analysis with China. Discuss Chinese economic metrics available through FRED and the CSI 300 (CSI300) from the last month. Explain what the reported values and market data suggest, then state material data gaps or release lags."
+      "prompt": "Using the latest available published observations at each series' native frequency, assess how US unemployment and CPI (monthly), GDP (quarterly), interest rates, and current market-price trends may affect the stock exchange. Identify potential industry or company beneficiaries only where the retrieved evidence supports it. State observation dates and material release lags, especially for GDP, and do not make causal claims beyond the available evidence.",
+      "follow_up_prompt": "Compare the prior US analysis with China using the latest available published Chinese metrics through FRED at their native release frequencies and current CSI 300 (CSI300) market data. Explain what the reported values and price data suggest, then state material data gaps, methodology differences, or release lags. Do not assume quarterly or monthly macroeconomic data must be available for the current calendar month."
     },
     {
       "id": "weekly-company-crash-screen",
@@ -23,7 +23,7 @@
     },
     {
       "id": "us-china-economic-delta",
-      "prompt": "Compare the US and China using GDP, unemployment rates, and inflation. State which economy had the worse change over comparable periods, explain the reported values in natural language, and identify where Chinese or US release timing or methodology makes the comparison uncertain."
+      "prompt": "Compare the US and China using the latest available comparable GDP (quarterly), unemployment-rate (typically monthly), and inflation observations. State which economy had the worse change over comparable periods, explain the reported values in natural language, and identify where Chinese or US release timing, methodology, or unavailable data makes the comparison uncertain. Do not treat a valid quarterly or release-lagged monthly observation as missing merely because it is not from the current calendar month."
     }
   ]
 }
