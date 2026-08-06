@@ -541,6 +541,11 @@ class LocalFREDAgent:
             extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         )
 
+    def _is_textual_tool_call(self, content: str) -> bool:
+        """Detect tool-call markup a local model returned outside the API field."""
+        normalized = content.lstrip().casefold()
+        return normalized.startswith(("<tool_call", "<function", "{" + '"name"'))
+
     def _report_token_usage(self, response: Any, messages: List[Dict[str, Any]]) -> None:
         """Report server usage when available, otherwise a request-size estimate."""
         # Fall back to local estimates when LM Studio does not include usage in its response.
@@ -642,8 +647,15 @@ class LocalFREDAgent:
             assistant_message = response.choices[0].message
             tool_calls = assistant_message.tool_calls
             if not tool_calls:
-                if assistant_message.content:
+                if assistant_message.content and not self._is_textual_tool_call(assistant_message.content):
                     return assistant_message.content
+                if assistant_message.content:
+                    self.activity_callback("Unparsed tool call received, writing final response")
+                    final_response = self._create_final_completion(messages)
+                    final_answer = final_response.choices[0].message.content
+                    if final_answer:
+                        return final_answer
+                    return "The local model did not produce a final response. Please submit the request again."
                 finish_reason = response.choices[0].finish_reason
                 if finish_reason == "length":
                     return (
