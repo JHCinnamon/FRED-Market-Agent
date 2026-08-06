@@ -437,6 +437,7 @@ class LocalFREDAgent:
         self,
         messages: List[Dict[str, Any]],
         max_tokens: int = REQUEST_TOKEN_BUDGET,
+        include_tool_schemas: bool = True,
     ) -> List[Dict[str, Any]]:
         """Keep a system prompt, the latest user request, and recent complete turns."""
         system_message = next(
@@ -449,8 +450,8 @@ class LocalFREDAgent:
         non_system_messages = [
             message for message in messages if message.get("role") != "system"
         ]
-        # Reserve space for tool schemas and a completion so requests fit the loaded context.
-        request_overhead = self._token_count(self.openai_tools) + 1_024
+        # Reserve space for tool schemas only when the completion can call tools.
+        request_overhead = (self._token_count(self.openai_tools) if include_tool_schemas else 0) + 1_024
         base_tokens = self._message_token_count(system_message) + request_overhead
         latest_user_index = max(
             (
@@ -468,11 +469,19 @@ class LocalFREDAgent:
         anchor = [latest_user, *trailing_exchange]
         anchor_tokens = sum(self._message_token_count(message) for message in anchor)
 
-        # A tool-call exchange is only valid with its initiating user request. If the
-        # exchange cannot fit, keep the request and let the model issue fresh tool calls.
+        # Keep the newest complete tool exchanges when the full active exchange cannot
+        # fit. This lets final synthesis retain retrieved evidence for complex reports.
         if base_tokens + anchor_tokens > max_tokens:
             anchor = [latest_user]
             anchor_tokens = self._message_token_count(latest_user)
+            retained_units: List[List[Dict[str, Any]]] = []
+            for unit in reversed(self._conversation_units(trailing_exchange)):
+                unit_tokens = sum(self._message_token_count(message) for message in unit)
+                if base_tokens + anchor_tokens + unit_tokens > max_tokens:
+                    continue
+                retained_units.insert(0, unit)
+                anchor_tokens += unit_tokens
+            anchor.extend(message for unit in retained_units for message in unit)
 
         used_tokens = base_tokens + anchor_tokens
         previous_messages = non_system_messages[:latest_user_index]
@@ -544,7 +553,14 @@ class LocalFREDAgent:
         )
         return self.client.chat.completions.create(
             model=QWEN_MODEL_NAME,
-            messages=cast(Any, self._truncate_messages(final_messages)),
+            messages=cast(
+                Any,
+                self._truncate_messages(
+                    final_messages,
+                    max_tokens=MODEL_CONTEXT_TOKENS - MAX_COMPLETION_TOKENS,
+                    include_tool_schemas=False,
+                ),
+            ),
             max_tokens=MAX_COMPLETION_TOKENS,
             extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         )
