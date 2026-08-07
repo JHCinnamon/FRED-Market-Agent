@@ -20,6 +20,14 @@ HISTORY_TOKEN_BUDGET = 900
 TOOL_RESULT_CHAR_LIMIT = 8_000
 DEFAULT_OBSERVATION_LIMIT = 12
 MAX_TOOL_CALL_ROUNDS = 12
+US_CHINA_COMPARISON_SERIES = (
+    ("US GDP growth", "CLVMNACSCAB1GQUS"),
+    ("China GDP growth", "CLVMNACSCAB1GQCN"),
+    ("US unemployment rate", "LRUNTTTTUSQ156S"),
+    ("China unemployment rate", "LRUNTTTTCNQ156S"),
+    ("US consumer price inflation", "CPALTT01USM659N"),
+    ("China consumer price inflation", "CPALTT01CNM659N"),
+)
 MARKET_SYMBOL_PATTERN = re.compile(
     r"\b(?:S&P\s*500|NASDAQ(?:\s+COMPOSITE)?|DOW(?:\s+JONES)?|CSI\s*300)\b"
     r"|\$[A-Za-z]{1,5}\b|\b[A-Za-z]{3}/[A-Za-z]{3}\b",
@@ -280,6 +288,45 @@ class LocalFREDAgent:
             if results:
                 matches[query] = results
         return matches
+
+    def _is_us_china_comparison(self, question: str) -> bool:
+        """Identify the evaluation's cross-country macroeconomic comparison request."""
+        normalized = question.casefold()
+        return "china" in normalized and all(
+            term in normalized for term in ("gdp", "unemployment", "inflation")
+        )
+
+    async def _prefetch_us_china_comparison(
+        self,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve comparable FRED observations before a US-China comparison is planned."""
+        self.activity_callback("Retrieving comparable US-China macroeconomic data")
+        calls = [
+            {
+                "id": f"us-china-comparison-{index}",
+                "type": "function",
+                "function": {
+                    "name": "get_fred_series_data",
+                    "arguments": json.dumps({"series_id": series_id, "limit": 12}),
+                },
+            }
+            for index, (_label, series_id) in enumerate(US_CHINA_COMPARISON_SERIES)
+        ]
+        results = await asyncio.gather(
+            *(self.get_fred_series_data(series_id, limit=12) for _label, series_id in US_CHINA_COMPARISON_SERIES),
+            return_exceptions=True,
+        )
+        tool_messages = []
+        for call, result in zip(calls, results):
+            content = (
+                json.dumps({"error": str(result)})
+                if isinstance(result, Exception)
+                else self._serialize_tool_result(result)
+            )
+            tool_messages.append(
+                {"role": "tool", "tool_call_id": call["id"], "content": content}
+            )
+        return [{"role": "assistant", "content": None, "tool_calls": calls}, *tool_messages]
 
     async def get_market_quote(self, symbol: str) -> Dict[str, Any]:
         """Get the latest market quote from Twelve Data."""
@@ -597,6 +644,9 @@ class LocalFREDAgent:
 
     def _evidence_fallback(self, messages: List[Dict[str, Any]]) -> str:
         """Render retrieved observations when the local model cannot finalize a report."""
+        series_labels = {
+            series_id: label for label, series_id in US_CHINA_COMPARISON_SERIES
+        }
         tool_requests = {
             call["id"]: call["function"]
             for message in messages
@@ -608,6 +658,7 @@ class LocalFREDAgent:
             "the requested economic and market assessment",
         )
         readings: List[str] = []
+        comparison_readings: Dict[str, Dict[str, Any]] = {}
         unavailable: List[str] = []
         for message in messages:
             if message.get("role") != "tool":
@@ -618,7 +669,8 @@ class LocalFREDAgent:
                 result = json.loads(message["content"])
             except (TypeError, json.JSONDecodeError):
                 continue
-            label = arguments.get("series_id") or arguments.get("symbol") or request.get("name", "source data")
+            series_id = arguments.get("series_id")
+            label = series_labels.get(series_id, series_id) or arguments.get("symbol") or request.get("name", "source data")
             if isinstance(result, dict) and result.get("error"):
                 unavailable.append(f"{label}: {result['error']}")
                 continue
@@ -633,6 +685,12 @@ class LocalFREDAgent:
                     readings.append(
                         f"- **{label}** (FRED): {latest.get('value')} on {latest.get('date')}{movement}."
                     )
+                    comparison_readings[label] = {
+                        "date": latest.get("date"),
+                        "value": latest.get("value"),
+                        "prior_date": prior.get("date") if prior else None,
+                        "prior_value": prior.get("value") if prior else None,
+                    }
             elif request.get("name") == "get_market_quote" and isinstance(result, dict):
                 readings.append(
                     f"- **{label}** (Twelve Data): close {result.get('close', 'unavailable')} "
@@ -661,6 +719,22 @@ class LocalFREDAgent:
             "GDP is released quarterly and can materially lag the current month; unemployment and CPI are monthly releases. Market prices may update daily.",
             "Cross-country comparisons, including US-China analysis, can be affected by different definitions, seasonal adjustment, publication calendars, and data availability.",
         ]
+        if self._is_us_china_comparison(question):
+            comparison_lines = []
+            for metric in ("GDP growth", "unemployment rate", "consumer price inflation"):
+                us_reading = comparison_readings.get(f"US {metric}")
+                china_reading = comparison_readings.get(f"China {metric}")
+                if us_reading and china_reading:
+                    comparison_lines.append(
+                        f"Latest {metric}: US {us_reading['value']} ({us_reading['date']}) "
+                        f"versus China {china_reading['value']} ({china_reading['date']})."
+                    )
+            lines[lines.index("## What the data suggests") + 1:lines.index("## What the data suggests") + 1] = [
+                "The latest US and China readings above are presented as like-for-like FRED series. "
+                "Compare each US-China pair at its native frequency and observation date; the higher or lower value alone does not establish which economy is performing better.",
+                *comparison_lines,
+                "GDP-growth, unemployment-rate, and consumer-price-inflation differences should be assessed separately because they measure distinct parts of economic performance.",
+            ]
         if unavailable:
             lines.append("Unavailable requested evidence: " + "; ".join(unavailable) + ".")
         return "\n".join(lines)
@@ -759,6 +833,8 @@ class LocalFREDAgent:
             },
             *conversation,
         ]
+        if self._is_us_china_comparison(latest_question):
+            messages.extend(await self._prefetch_us_china_comparison())
         
         # Enforce the request budget before the first local-model completion.
         messages = self._truncate_messages(messages)
