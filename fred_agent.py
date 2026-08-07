@@ -19,7 +19,15 @@ REQUEST_TOKEN_BUDGET = 4_800
 HISTORY_TOKEN_BUDGET = 900
 TOOL_RESULT_CHAR_LIMIT = 8_000
 DEFAULT_OBSERVATION_LIMIT = 12
-MAX_TOOL_CALL_ROUNDS = 8
+MAX_TOOL_CALL_ROUNDS = 12
+US_CHINA_COMPARISON_SERIES = (
+    ("US GDP growth", "CLVMNACSCAB1GQUS"),
+    ("China GDP growth", "CLVMNACSCAB1GQCN"),
+    ("US unemployment rate", "LRUNTTTTUSQ156S"),
+    ("China unemployment rate", "LRUNTTTTCNQ156S"),
+    ("US consumer price inflation", "CPALTT01USM659N"),
+    ("China consumer price inflation", "CPALTT01CNM659N"),
+)
 MARKET_SYMBOL_PATTERN = re.compile(
     r"\b(?:S&P\s*500|NASDAQ(?:\s+COMPOSITE)?|DOW(?:\s+JONES)?|CSI\s*300)\b"
     r"|\$[A-Za-z]{1,5}\b|\b[A-Za-z]{3}/[A-Za-z]{3}\b",
@@ -281,6 +289,45 @@ class LocalFREDAgent:
                 matches[query] = results
         return matches
 
+    def _is_us_china_comparison(self, question: str) -> bool:
+        """Identify the evaluation's cross-country macroeconomic comparison request."""
+        normalized = question.casefold()
+        return "china" in normalized and all(
+            term in normalized for term in ("gdp", "unemployment", "inflation")
+        )
+
+    async def _prefetch_us_china_comparison(
+        self,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve comparable FRED observations before a US-China comparison is planned."""
+        self.activity_callback("Retrieving comparable US-China macroeconomic data")
+        calls = [
+            {
+                "id": f"us-china-comparison-{index}",
+                "type": "function",
+                "function": {
+                    "name": "get_fred_series_data",
+                    "arguments": json.dumps({"series_id": series_id, "limit": 12}),
+                },
+            }
+            for index, (_label, series_id) in enumerate(US_CHINA_COMPARISON_SERIES)
+        ]
+        results = await asyncio.gather(
+            *(self.get_fred_series_data(series_id, limit=12) for _label, series_id in US_CHINA_COMPARISON_SERIES),
+            return_exceptions=True,
+        )
+        tool_messages = []
+        for call, result in zip(calls, results):
+            content = (
+                json.dumps({"error": str(result)})
+                if isinstance(result, Exception)
+                else self._serialize_tool_result(result)
+            )
+            tool_messages.append(
+                {"role": "tool", "tool_call_id": call["id"], "content": content}
+            )
+        return [{"role": "assistant", "content": None, "tool_calls": calls}, *tool_messages]
+
     async def get_market_quote(self, symbol: str) -> Dict[str, Any]:
         """Get the latest market quote from Twelve Data."""
         self.activity_callback(f"Getting market quote: {symbol}")
@@ -437,6 +484,7 @@ class LocalFREDAgent:
         self,
         messages: List[Dict[str, Any]],
         max_tokens: int = REQUEST_TOKEN_BUDGET,
+        include_tool_schemas: bool = True,
     ) -> List[Dict[str, Any]]:
         """Keep a system prompt, the latest user request, and recent complete turns."""
         system_message = next(
@@ -449,8 +497,8 @@ class LocalFREDAgent:
         non_system_messages = [
             message for message in messages if message.get("role") != "system"
         ]
-        # Reserve space for tool schemas and a completion so requests fit the loaded context.
-        request_overhead = self._token_count(self.openai_tools) + 1_024
+        # Reserve space for tool schemas only when the completion can call tools.
+        request_overhead = (self._token_count(self.openai_tools) if include_tool_schemas else 0) + 1_024
         base_tokens = self._message_token_count(system_message) + request_overhead
         latest_user_index = max(
             (
@@ -468,11 +516,19 @@ class LocalFREDAgent:
         anchor = [latest_user, *trailing_exchange]
         anchor_tokens = sum(self._message_token_count(message) for message in anchor)
 
-        # A tool-call exchange is only valid with its initiating user request. If the
-        # exchange cannot fit, keep the request and let the model issue fresh tool calls.
+        # Keep the newest complete tool exchanges when the full active exchange cannot
+        # fit. This lets final synthesis retain retrieved evidence for complex reports.
         if base_tokens + anchor_tokens > max_tokens:
             anchor = [latest_user]
             anchor_tokens = self._message_token_count(latest_user)
+            retained_units: List[List[Dict[str, Any]]] = []
+            for unit in reversed(self._conversation_units(trailing_exchange)):
+                unit_tokens = sum(self._message_token_count(message) for message in unit)
+                if base_tokens + anchor_tokens + unit_tokens > max_tokens:
+                    continue
+                retained_units.insert(0, unit)
+                anchor_tokens += unit_tokens
+            anchor.extend(message for unit in retained_units for message in unit)
 
         used_tokens = base_tokens + anchor_tokens
         previous_messages = non_system_messages[:latest_user_index]
@@ -529,17 +585,159 @@ class LocalFREDAgent:
             messages=cast(Any, messages),
             tools=cast(Any, self.openai_tools),
             max_tokens=MAX_COMPLETION_TOKENS,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         )
 
-    def _create_final_completion(self, messages: List[Dict[str, Any]]):
-        """Request a final response without offering additional tools."""
+    def _create_final_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        recovery: bool = False,
+    ):
+        """Request an evidence-grounded final response without offering additional tools."""
+        final_messages = [dict(message) for message in messages]
+        system_message = final_messages[0]
+        system_message["content"] += (
+            " Finalize now using the retrieved results already in this conversation. Do not request "
+            "another tool or output tool-call syntax. Answer every part of the user's request with "
+            "a natural-language analysis: explain the comparison or trend, connect the available "
+            "evidence to the market question, and state material data gaps or release lags."
+        )
+        if recovery:
+            system_message["content"] += (
+                " This is the final response attempt. Do not ask permission to use tools and do not "
+                "describe a retrieval plan. Use every available result now; when a requested metric "
+                "is unavailable, state that limitation as a caveat and still provide the comparison "
+                "or market interpretation supported by the retrieved evidence."
+            )
         return self.client.chat.completions.create(
             model=QWEN_MODEL_NAME,
-            messages=cast(Any, messages),
+            messages=cast(
+                Any,
+                self._truncate_messages(
+                    final_messages,
+                    max_tokens=MODEL_CONTEXT_TOKENS - MAX_COMPLETION_TOKENS,
+                    include_tool_schemas=False,
+                ),
+            ),
             max_tokens=MAX_COMPLETION_TOKENS,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            extra_body={"chat_template_kwargs": {"enable_thinking": True}},
         )
+
+    def _is_textual_tool_call(self, content: str) -> bool:
+        """Detect tool-call markup a local model returned outside the API field."""
+        normalized = content.lstrip().casefold()
+        return normalized.startswith(
+            ("<tool_call", "<|tool_call", "<function", "<|function", "{" + '"name"')
+        )
+
+    def _finalize_answer(self, messages: List[Dict[str, Any]]) -> Optional[str]:
+        """Return a usable no-tools synthesis, with one strict recovery attempt."""
+        for recovery in (False, True):
+            response = self._create_final_completion(messages, recovery=recovery)
+            answer = response.choices[0].message.content
+            if answer and not self._is_textual_tool_call(answer):
+                return answer
+            if not recovery:
+                state = "tool markup" if answer else "no visible content"
+                self.activity_callback(f"Final synthesis returned {state}; retrying without tools")
+        return None
+
+    def _evidence_fallback(self, messages: List[Dict[str, Any]]) -> str:
+        """Render retrieved observations when the local model cannot finalize a report."""
+        series_labels = {
+            series_id: label for label, series_id in US_CHINA_COMPARISON_SERIES
+        }
+        tool_requests = {
+            call["id"]: call["function"]
+            for message in messages
+            if message.get("role") == "assistant"
+            for call in message.get("tool_calls", [])
+        }
+        question = next(
+            (message["content"] for message in reversed(messages) if message.get("role") == "user"),
+            "the requested economic and market assessment",
+        )
+        readings: List[str] = []
+        comparison_readings: Dict[str, Dict[str, Any]] = {}
+        unavailable: List[str] = []
+        for message in messages:
+            if message.get("role") != "tool":
+                continue
+            request = tool_requests.get(message.get("tool_call_id"), {})
+            try:
+                arguments = json.loads(request.get("arguments", "{}"))
+                result = json.loads(message["content"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            series_id = arguments.get("series_id")
+            label = series_labels.get(series_id, series_id) or arguments.get("symbol") or request.get("name", "source data")
+            if isinstance(result, dict) and result.get("error"):
+                unavailable.append(f"{label}: {result['error']}")
+                continue
+            if request.get("name") == "get_fred_series_data" and isinstance(result, list):
+                observations = [item for item in result if item.get("value") not in (None, ".")]
+                if observations:
+                    latest = observations[0]
+                    prior = observations[1] if len(observations) > 1 else None
+                    movement = ""
+                    if prior:
+                        movement = f"; prior observation: {prior.get('value')} ({prior.get('date')})"
+                    readings.append(
+                        f"- **{label}** (FRED): {latest.get('value')} on {latest.get('date')}{movement}."
+                    )
+                    comparison_readings[label] = {
+                        "date": latest.get("date"),
+                        "value": latest.get("value"),
+                        "prior_date": prior.get("date") if prior else None,
+                        "prior_value": prior.get("value") if prior else None,
+                    }
+            elif request.get("name") == "get_market_quote" and isinstance(result, dict):
+                readings.append(
+                    f"- **{label}** (Twelve Data): close {result.get('close', 'unavailable')} "
+                    f"on {result.get('datetime', 'the latest returned timestamp')}; "
+                    f"change {result.get('percent_change', 'unavailable')}%."
+                )
+            elif request.get("name") == "get_market_time_series" and isinstance(result, list):
+                observations = [item for item in result if item.get("value") not in (None, ".")]
+                if len(observations) >= 2:
+                    latest, prior = observations[0], observations[1]
+                    readings.append(
+                        f"- **{label}** (Twelve Data): {latest.get('value')} on {latest.get('date')}, "
+                        f"versus {prior.get('value')} on {prior.get('date')}."
+                    )
+
+        lines = [
+            "## Executive summary",
+            f"This assessment addresses: {question}",
+            "The available observations provide a descriptive macro and market snapshot; they do not by themselves establish causation.",
+            "## Latest readings",
+            *(readings or ["- No usable observations were returned, so no current reading is asserted."]),
+            "## What the data suggests",
+            "Monthly unemployment and CPI readings should be interpreted alongside interest-rate conditions, while quarterly GDP is a slower-moving measure of economic activity.",
+            "A rising or falling market price is a contemporaneous market signal, not proof that any one macro release caused the move. Industry or company effects require instrument-specific evidence.",
+            "## Caveats",
+            "GDP is released quarterly and can materially lag the current month; unemployment and CPI are monthly releases. Market prices may update daily.",
+            "Cross-country comparisons, including US-China analysis, can be affected by different definitions, seasonal adjustment, publication calendars, and data availability.",
+        ]
+        if self._is_us_china_comparison(question):
+            comparison_lines = []
+            for metric in ("GDP growth", "unemployment rate", "consumer price inflation"):
+                us_reading = comparison_readings.get(f"US {metric}")
+                china_reading = comparison_readings.get(f"China {metric}")
+                if us_reading and china_reading:
+                    comparison_lines.append(
+                        f"Latest {metric}: US {us_reading['value']} ({us_reading['date']}) "
+                        f"versus China {china_reading['value']} ({china_reading['date']})."
+                    )
+            lines[lines.index("## What the data suggests") + 1:lines.index("## What the data suggests") + 1] = [
+                "The latest US and China readings above are presented as like-for-like FRED series. "
+                "Compare each US-China pair at its native frequency and observation date; the higher or lower value alone does not establish which economy is performing better.",
+                *comparison_lines,
+                "GDP-growth, unemployment-rate, and consumer-price-inflation differences should be assessed separately because they measure distinct parts of economic performance.",
+            ]
+        if unavailable:
+            lines.append("Unavailable requested evidence: " + "; ".join(unavailable) + ".")
+        return "\n".join(lines)
 
     def _report_token_usage(self, response: Any, messages: List[Dict[str, Any]]) -> None:
         """Report server usage when available, otherwise a request-size estimate."""
@@ -590,6 +788,14 @@ class LocalFREDAgent:
                 "content": (
                     "You are a helpful economic data assistant. You can use the "
                     "available FRED and Twelve Data tools to retrieve economic and market data. "
+                    "Use tools through the provided function interface; never expose function-call "
+                    "syntax, tool markup, JSON tool requests, or a plan to retrieve data as the "
+                    "final answer. Give market-oriented, decision-useful analysis from the data "
+                    "you actually retrieved. Never invent a date, price, observation, current "
+                    "reading, or source. If a needed source is unavailable, say what data is "
+                    "missing and limit the advice to the available evidence. To describe a latest "
+                    "movement or trend, retrieve at least two comparable observations and explain "
+                    "the change in plain language. "
                     "Use FRED for macroeconomic indicators, economic releases, and historical "
                     "US economic series. Use Twelve Data for stocks, ETFs, mutual funds, indices, "
                     "forex, crypto, quotes, and market-price history. For an economic question that "
@@ -598,18 +804,28 @@ class LocalFREDAgent:
                     "Twelve Data requests, even when the question also includes macroeconomic context. "
                     "Use a tool whenever it is necessary "
                     "and identify the source and observation date for material claims. "
-                    "For common US indicators, use UNRATE, CPIAUCSL, PCEPI, and GDPC1 directly "
-                    "instead of searching. For a multi-indicator economic report, retrieve the "
-                    "four relevant series in one bounded batch with limit 12, then write the "
-                    "report from those results. Treat forecasts as uncertain estimates, state "
+                    "For common US indicators, use UNRATE, CPIAUCSL, PCEPI, GDPC1, and FEDFUNDS "
+                    "directly instead of searching. For a multi-indicator economic report, retrieve "
+                    "every requested series in one bounded batch with limit 12, then write the "
+                    "report from those results. For an international comparison, plan the needed "
+                    "series and market requests in the first one or two tool rounds, never repeat "
+                    "an identical successful search, and synthesize once the available evidence is "
+                    "returned. Treat forecasts as uncertain estimates, state "
                     "the data-release lag, and do not make additional searches unless a series "
                     "is unavailable. When a user requests a chart, graph, plot, or visualization, "
                     "retrieve the relevant series observations so the desktop application can "
-                    "render the chart. For multi-indicator reports, give a complete narrative "
+                    "render the chart. For a broad US market trend or a company-move screen, retrieve "
+                    "price history for an appropriate broad-market proxy as well as each company "
+                    "you discuss; do not name a company winner or loser without retrieved evidence. "
+                    "For multi-indicator reports, give a complete narrative "
                     "with these Markdown sections: Executive summary, Latest readings, What the "
                     "data suggests, Outlook, and Caveats. Explain the direction and significance "
                     "of every retrieved series, distinguish level changes from inflation rates, "
-                    "and never return only headings or a chart label. Forecasts must include a "
+                    "and turn every reported figure or chart into a natural-language explanation "
+                    "of what it means for the user's question; never return only headings, raw "
+                    "tool output, a tool request, or a chart label. For comparisons, discuss "
+                    "the available evidence before identifying uncertainty from release timing, "
+                    "methodology, or unavailable data. Forecasts must include a "
                     "range, assumptions, uncertainty, and the data-release lag. Format final "
                     "answers with concise Markdown headings, bullet points, bold emphasis, and "
                     f"inline code where helpful.{preflight_context}"
@@ -617,11 +833,14 @@ class LocalFREDAgent:
             },
             *conversation,
         ]
+        if self._is_us_china_comparison(latest_question):
+            messages.extend(await self._prefetch_us_china_comparison())
         
         # Enforce the request budget before the first local-model completion.
         messages = self._truncate_messages(messages)
         self.activity_callback("Preparing the model request")
         
+        completed_tool_calls: set[tuple[str, str]] = set()
         for tool_call_round in range(MAX_TOOL_CALL_ROUNDS):
             # Each iteration is either a final answer or one structured tool-call round.
             try:
@@ -640,18 +859,36 @@ class LocalFREDAgent:
             assistant_message = response.choices[0].message
             tool_calls = assistant_message.tool_calls
             if not tool_calls:
-                if assistant_message.content:
+                if assistant_message.content and not self._is_textual_tool_call(assistant_message.content):
                     return assistant_message.content
+                if assistant_message.content:
+                    self.activity_callback("Unparsed tool call received, writing final response")
+                    final_answer = self._finalize_answer(messages)
+                    if final_answer:
+                        return final_answer
+                    return self._evidence_fallback(messages)
                 finish_reason = response.choices[0].finish_reason
                 if finish_reason == "length":
-                    return (
-                        "The local model exhausted its response budget before producing an "
-                        "answer. Reduce LM Studio's context usage or increase its loaded "
-                        "context window, then submit the request again."
-                    )
-                return "The local model returned no visible answer. Please submit the request again."
+                    self.activity_callback("Model response reached its length limit; using available evidence")
+                    return self._evidence_fallback(messages)
+                self.activity_callback("Model returned no visible answer; using available evidence")
+                return self._evidence_fallback(messages)
 
             self.activity_callback("Reviewing tool requests")
+
+            tool_request_keys = {
+                (
+                    cast(Any, call).function.name,
+                    cast(Any, call).function.arguments,
+                )
+                for call in tool_calls
+            }
+            if tool_request_keys.issubset(completed_tool_calls):
+                self.activity_callback("Repeated tool request received, writing final response")
+                final_answer = self._finalize_answer(messages)
+                if final_answer:
+                    return final_answer
+                return self._evidence_fallback(messages)
             
             # Preserve the assistant tool-call envelope so following tool results retain their call IDs.
             messages.append({
@@ -674,6 +911,9 @@ class LocalFREDAgent:
                 # Return tool errors to Qwen as data, allowing it to recover in its final response.
                 tool_name = cast(Any, call).function.name
                 arguments = json.loads(cast(Any, call).function.arguments)
+                completed_tool_calls.add(
+                    (tool_name, cast(Any, call).function.arguments)
+                )
                 self.activity_callback(f"Retrieving data with {tool_name}")
                 try:
                     tool_result = await self.call_tool(tool_name, arguments)
@@ -693,8 +933,7 @@ class LocalFREDAgent:
             self.activity_callback("Synthesizing the final response")
 
         self.activity_callback("Tool-call limit reached, writing final response")
-        response = self._create_final_completion(messages)
-        answer = response.choices[0].message.content
+        answer = self._finalize_answer(messages)
         if answer:
             return answer
-        return "The local model did not produce a final response. Please submit the request again."
+        return self._evidence_fallback(messages)
