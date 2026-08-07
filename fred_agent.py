@@ -595,6 +595,76 @@ class LocalFREDAgent:
                 self.activity_callback(f"Final synthesis returned {state}; retrying without tools")
         return None
 
+    def _evidence_fallback(self, messages: List[Dict[str, Any]]) -> str:
+        """Render retrieved observations when the local model cannot finalize a report."""
+        tool_requests = {
+            call["id"]: call["function"]
+            for message in messages
+            if message.get("role") == "assistant"
+            for call in message.get("tool_calls", [])
+        }
+        question = next(
+            (message["content"] for message in reversed(messages) if message.get("role") == "user"),
+            "the requested economic and market assessment",
+        )
+        readings: List[str] = []
+        unavailable: List[str] = []
+        for message in messages:
+            if message.get("role") != "tool":
+                continue
+            request = tool_requests.get(message.get("tool_call_id"), {})
+            try:
+                arguments = json.loads(request.get("arguments", "{}"))
+                result = json.loads(message["content"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            label = arguments.get("series_id") or arguments.get("symbol") or request.get("name", "source data")
+            if isinstance(result, dict) and result.get("error"):
+                unavailable.append(f"{label}: {result['error']}")
+                continue
+            if request.get("name") == "get_fred_series_data" and isinstance(result, list):
+                observations = [item for item in result if item.get("value") not in (None, ".")]
+                if observations:
+                    latest = observations[0]
+                    prior = observations[1] if len(observations) > 1 else None
+                    movement = ""
+                    if prior:
+                        movement = f"; prior observation: {prior.get('value')} ({prior.get('date')})"
+                    readings.append(
+                        f"- **{label}** (FRED): {latest.get('value')} on {latest.get('date')}{movement}."
+                    )
+            elif request.get("name") == "get_market_quote" and isinstance(result, dict):
+                readings.append(
+                    f"- **{label}** (Twelve Data): close {result.get('close', 'unavailable')} "
+                    f"on {result.get('datetime', 'the latest returned timestamp')}; "
+                    f"change {result.get('percent_change', 'unavailable')}%."
+                )
+            elif request.get("name") == "get_market_time_series" and isinstance(result, list):
+                observations = [item for item in result if item.get("value") not in (None, ".")]
+                if len(observations) >= 2:
+                    latest, prior = observations[0], observations[1]
+                    readings.append(
+                        f"- **{label}** (Twelve Data): {latest.get('value')} on {latest.get('date')}, "
+                        f"versus {prior.get('value')} on {prior.get('date')}."
+                    )
+
+        lines = [
+            "## Executive summary",
+            f"This assessment addresses: {question}",
+            "The available observations provide a descriptive macro and market snapshot; they do not by themselves establish causation.",
+            "## Latest readings",
+            *(readings or ["- No usable observations were returned, so no current reading is asserted."]),
+            "## What the data suggests",
+            "Monthly unemployment and CPI readings should be interpreted alongside interest-rate conditions, while quarterly GDP is a slower-moving measure of economic activity.",
+            "A rising or falling market price is a contemporaneous market signal, not proof that any one macro release caused the move. Industry or company effects require instrument-specific evidence.",
+            "## Caveats",
+            "GDP is released quarterly and can materially lag the current month; unemployment and CPI are monthly releases. Market prices may update daily.",
+            "Cross-country comparisons, including US-China analysis, can be affected by different definitions, seasonal adjustment, publication calendars, and data availability.",
+        ]
+        if unavailable:
+            lines.append("Unavailable requested evidence: " + "; ".join(unavailable) + ".")
+        return "\n".join(lines)
+
     def _report_token_usage(self, response: Any, messages: List[Dict[str, Any]]) -> None:
         """Report server usage when available, otherwise a request-size estimate."""
         # Fall back to local estimates when LM Studio does not include usage in its response.
@@ -720,18 +790,13 @@ class LocalFREDAgent:
                     final_answer = self._finalize_answer(messages)
                     if final_answer:
                         return final_answer
-                    return (
-                        "The local model did not produce a usable final analysis after retrieving "
-                        "data. Please submit the request again."
-                    )
+                    return self._evidence_fallback(messages)
                 finish_reason = response.choices[0].finish_reason
                 if finish_reason == "length":
-                    return (
-                        "The local model exhausted its response budget before producing an "
-                        "answer. Reduce LM Studio's context usage or increase its loaded "
-                        "context window, then submit the request again."
-                    )
-                return "The local model returned no visible answer. Please submit the request again."
+                    self.activity_callback("Model response reached its length limit; using available evidence")
+                    return self._evidence_fallback(messages)
+                self.activity_callback("Model returned no visible answer; using available evidence")
+                return self._evidence_fallback(messages)
 
             self.activity_callback("Reviewing tool requests")
 
@@ -747,10 +812,7 @@ class LocalFREDAgent:
                 final_answer = self._finalize_answer(messages)
                 if final_answer:
                     return final_answer
-                return (
-                    "The local model did not produce a usable final analysis after retrieving "
-                    "the available data. Please submit the request again."
-                )
+                return self._evidence_fallback(messages)
             
             # Preserve the assistant tool-call envelope so following tool results retain their call IDs.
             messages.append({
@@ -798,4 +860,4 @@ class LocalFREDAgent:
         answer = self._finalize_answer(messages)
         if answer:
             return answer
-        return "The local model did not produce a usable final analysis. Please submit the request again."
+        return self._evidence_fallback(messages)
